@@ -1,0 +1,35 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.local
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sw?
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Haskell
+.stack-work/
+dist-newstyle/
+*.hi
+*.o
+
+# JavaScript
+node_modules/
+
+# Runtime leftovers
+.cache/
+*.log
+*.tmp
