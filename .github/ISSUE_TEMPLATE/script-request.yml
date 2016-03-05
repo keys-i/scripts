@@ -1,0 +1,40 @@
+name: Script request
+description: Suggest a small script for a repeatable problem
+title: "add: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What repeated task should this script remove?
+    validations:
+      required: true
+  - type: textarea
+    id: interface
+    attributes:
+      label: Expected command
+      description: Show the simplest useful command and expected result.
+      placeholder: |
+        find-pkg python requests
+        requests — Python HTTP client
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Target environment
+      placeholder: Linux with Slurm, macOS, any system with Python 3
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing alternatives
+      description: What command or tool have you already tried?
+  - type: textarea
+    id: limits
+    attributes:
+      label: Safety and limitations
+      description: Note permissions, destructive behaviour, dependencies, or known edge cases.

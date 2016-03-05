@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/keys-i/scripts/security/advisories/new
+    about: Use GitHub's private reporting form instead of a public issue.
