@@ -8,7 +8,30 @@ here because they are useful, not because they need to become full projects.
 
 ## Using a Script
 
-Run a script without cloning the repository or keeping a local copy:
+The easiest way to use the collection is the interactive dashboard. It finds
+the right script, renders its help page, guides you through the available
+options, and streams the output:
+
+```sh
+uv run --refresh "https://raw.githubusercontent.com/keys-i/scripts/main/dev/gui.py"
+```
+
+The same command works in PowerShell. It needs
+[`uv`](https://docs.astral.sh/uv/getting-started/installation/), but it does not
+need a clone or a Python setup: `uv` runs the pinned dependencies in an isolated
+environment, and the dashboard removes its temporary repository copy when it
+closes.
+
+The dashboard is full-screen by default. On macOS and Linux, add `--inline` to
+keep it below the prompt. Add `--nerd-fonts` when your terminal uses a Nerd
+Font. Use `/` to filter, `F1` for help, `F2` to run, `F3` for files, and `F5`
+to sort; every control also works with a mouse.
+
+Cleanup scripts always run a preview first. Applying repeats discovery with the
+same settings and requires typing `CLEAN`, so targets can change if the
+filesystem changes between the two runs.
+
+To run one script directly without cloning or keeping a local copy:
 
 ```sh
 (
@@ -41,9 +64,8 @@ try {
 }
 ```
 
-Remote execution still fetches the script, but neither example leaves a copy
-behind. Requirements differ between scripts; check the script before running
-it and use its help text for supported systems and options.
+Remote execution still fetches code temporarily, but none of these examples
+leaves a repository or script behind. Review remote code before running it.
 
 > [!CAUTION]
 > Read system and cleanup scripts before running them. Use the least privilege
@@ -68,4 +90,4 @@ welcome. Read the [contribution rules](docs/CONTRIBUTING.md) before opening a
 pull request.
 
 Please report security problems privately by following the
-[security policy](SECURITY.md).
+[security policy](docs/SECURITY.md).

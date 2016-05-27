@@ -94,8 +94,13 @@ run() {
     warn "cannot run as root without sudo or doas: $label"
     FAILURES=$((FAILURES + 1))
     return 0
+  elif [ "${ROOT_RUNNER##*/}" = sudo ] &&
+    [ "${SCRIPTS_TUI:-0}" = 1 ]; then
+    PATH=$SAFE_PATH "$ROOT_RUNNER" -n -- "$@" || result=$?
   elif [ "${ROOT_RUNNER##*/}" = sudo ]; then
     PATH=$SAFE_PATH "$ROOT_RUNNER" -- "$@" || result=$?
+  elif [ "${SCRIPTS_TUI:-0}" = 1 ]; then
+    PATH=$SAFE_PATH "$ROOT_RUNNER" -n "$@" || result=$?
   else
     PATH=$SAFE_PATH "$ROOT_RUNNER" "$@" || result=$?
   fi
