@@ -1,6 +1,6 @@
 # TODO
 
-- [x] Commit the interactive C# dashboard on `add/cs-tui`:
+- [x] Commit the interactive C# dashboard on `cs`:
 
   ```sh
   git add .github/workflows/test.yml .gitignore README.md TODO.md \
@@ -9,4 +9,12 @@
     sys/windows/clean.ps1.help && \
     git -c commit.gpgsign=false bkcommit '2016-05-27T16:04:00+10:00' \
       -m 'add: interactive C# script dashboard'
+  ```
+
+- [x] Keep workflow changes on the separate `actions` branch:
+
+  ```sh
+  git add .github/workflows/test.yml TODO.md && \
+    git -c commit.gpgsign=false bkcommit '2016-05-27T16:22:00+10:00' \
+      -m 'update: separate C# and Actions branches'
   ```
