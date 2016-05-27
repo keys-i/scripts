@@ -1,0 +1,37 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet build dev/tui/Scripts.Tui.csproj --configuration Release
+      - run: >-
+          dotnet run --project dev/tui/Scripts.Tui.csproj
+          --configuration Release --no-build -- --self-test
+      - if: runner.os == 'Linux'
+        run: sys/linux/clean --self-test
+      - if: runner.os == 'macOS'
+        run: sys/macos/clean --self-test
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./sys/windows/clean.ps1 -SelfTest

@@ -1,0 +1,73 @@
+---
+{
+  "summary": "Clean package, desktop, browser, and temporary caches.",
+  "platform": "linux",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "options": [
+    {
+      "flag": "--all-temp",
+      "label": "Include recent user temp files",
+      "warning": "Recent files in /tmp and /var/tmp may still be in use."
+    },
+    {
+      "flag": "--logs",
+      "label": "Trim archived system logs",
+      "warning": "Archived systemd journal entries older than seven days are removed."
+    },
+    {
+      "flag": "--store-gc",
+      "label": "Garbage-collect Nix and Guix stores",
+      "warning": "Unreachable store objects may need to be downloaded again."
+    },
+    {
+      "flag": "--verbose",
+      "label": "Show every filesystem target"
+    }
+  ]
+}
+---
+
+# Linux cache cleaner
+
+Clears regenerable caches left by package managers, desktop applications,
+browsers, Flatpak, Snap, and temporary-file policies.
+
+In the TUI, the first run is always a preview. Nothing is deleted until that
+preview finishes successfully and you type `CLEAN`.
+
+## What it can clean
+
+- APT, DNF, Yum, Zypper, Pacman, APK, XBPS, Portage, and RPM-OSTree caches
+- XDG, Flatpak, Snap, and Firefox startup caches
+- stale current-user temporary files
+- optional archived systemd journals and unreachable Nix or Guix store objects
+
+## Safety
+
+Run it as your normal user. Commands that need elevated access use `sudo` or
+`doas` individually. It does not target package databases, installed packages,
+containers, volumes, kernel data, or broad system directories.
+
+Package files used for offline reinstalls or downgrades may be removed. Close
+applications before applying the plan. Run `sudo -v` before opening the TUI;
+password prompts are intentionally disabled inside it.
+
+## Options
+
+| Option | Meaning |
+| --- | --- |
+| `--all-temp` | include recent current-user temp files |
+| `--logs` | keep only seven days of archived systemd journals |
+| `--store-gc` | collect unreachable Nix and Guix store objects |
+| `--verbose` | print every filesystem target |
+| `--apply` | apply the previewed plan |
+| `--yes` | accept the script's prompt after TUI confirmation |
+
+## Direct CLI
+
+```sh
+sys/linux/clean --help
+sys/linux/clean --verbose
+sys/linux/clean --apply
+```

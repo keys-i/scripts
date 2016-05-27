@@ -33,3 +33,7 @@ node_modules/
 .cache/
 *.log
 *.tmp
+
+# TUI build output
+dev/tui/bin/
+dev/tui/obj/

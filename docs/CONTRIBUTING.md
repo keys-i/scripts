@@ -69,10 +69,20 @@ Only clean, understandable, and tested scripts are accepted.
 - Keep dependencies to the minimum and document every non-standard dependency.
 - Make destructive behaviour explicit. Prefer a dry run or confirmation before
   deleting or overwriting data.
+- Give every runnable script an adjacent `<script>.help` file. Start it with
+  JSON front matter describing its platform and options, then write the actual
+  help as concise Markdown. Destructive scripts must also declare matching
+  `applyFlag` and `yesFlag` values; ordinary scripts omit both.
 - Test the changed paths on every operating system or environment claimed by
   the script.
 - Add the smallest repeatable test or self-check that would catch the bug
   returning. If automation is impractical, document the exact manual check.
+
+When changing a script or its help page, also run the dashboard contract check:
+
+```sh
+dotnet run --project dev/tui -- --self-test
+```
 
 ## Pull Requests
 

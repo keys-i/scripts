@@ -1,0 +1,71 @@
+---
+{
+  "summary": "Clean user, package, browser, developer, and Windows caches.",
+  "platform": "windows",
+  "applyFlag": "-Apply",
+  "yesFlag": "-Yes",
+  "options": [
+    {
+      "flag": "-AllTemp",
+      "label": "Include recent user temp files",
+      "warning": "Recent temporary files may still be in use."
+    },
+    {
+      "flag": "-System",
+      "label": "Run the separate system cleanup",
+      "warning": "Requires an elevated 64-bit PowerShell process and cleans Windows component data."
+    },
+    {
+      "flag": "-GlobalPackages",
+      "label": "Clear the global NuGet package cache",
+      "warning": "Projects will need to restore their NuGet packages."
+    },
+    {
+      "flag": "-Verbose",
+      "label": "Show every filesystem target"
+    }
+  ]
+}
+---
+
+# Windows cache cleaner
+
+Builds a guarded cleanup plan for regenerable Windows, application, package,
+browser, and development-tool caches.
+
+In the TUI, the first run is always a preview. Nothing is deleted until that
+preview finishes successfully and you type `CLEAN`.
+
+## What it can clean
+
+- current-user temporary, Direct3D, Internet, and app `TempState` caches
+- Edge, Chrome, Brave, Chromium, and Firefox caches
+- Chocolatey, Scoop, and NuGet caches
+- Delivery Optimization and the Windows component store in system mode
+
+## Safety
+
+Normal cleanup runs without elevation. System cleanup is deliberately separate
+and requires an elevated 64-bit PowerShell process. The script validates local
+fixed-drive paths, refuses protected paths, and does not follow reparse points.
+
+Close browsers, packaged apps, and development tools before applying the plan.
+
+## Options
+
+| Option | Meaning |
+| --- | --- |
+| `-AllTemp` | include recent current-user temp files |
+| `-System` | run the separate elevated Windows cleanup |
+| `-GlobalPackages` | clear the global NuGet package folder |
+| `-Verbose` | print every filesystem target |
+| `-Apply` | apply the previewed plan |
+| `-Yes` | accept the script's prompt after TUI confirmation |
+
+## Direct CLI
+
+```powershell
+sys\windows\clean.ps1
+sys\windows\clean.ps1 -Verbose
+sys\windows\clean.ps1 -Apply
+```
