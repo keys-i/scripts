@@ -333,7 +333,7 @@ def _download_repository(destination: Path) -> Path:
     except zipfile.BadZipFile as error:
         raise GuiError("downloaded repository archive is invalid") from error
 
-    root = destination / roots.pop()
+    root = (destination / roots.pop()).resolve()
     if not _valid_root(root):
         raise GuiError("downloaded archive is not a scripts repository")
     return root
