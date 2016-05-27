@@ -1,0 +1,293 @@
+#!/bin/zsh
+#
+# Clean regenerable macOS caches. Dry-run by default.
+
+emulate -LR zsh
+setopt ERR_EXIT EXTENDED_GLOB NO_UNSET PIPE_FAIL
+
+readonly PROGRAM=${0:t}
+integer APPLY=0 ALL_TEMP=0 INCLUDE_LOGS=0 ASSUME_YES=0 VERBOSE=0
+integer SELF_TEST=0 SIMULATORS=0 FAILURES=0
+
+typeset HOME_REAL='' TEST_ROOT='' USER_ID='' DARWIN_CACHE='' DARWIN_TEMP=''
+typeset -a CACHE_DIRS=() TEMP_DIRS=()
+
+usage() {
+  cat <<'EOF'
+Usage: clean [options]
+
+Delete regenerable macOS caches. Nothing is deleted without --apply.
+
+  --apply       Delete discovered files after confirmation
+  --all-temp    Delete all current-user temp files instead of files over 3 days old
+  --logs        Also delete user application and diagnostic logs
+  --yes         Skip confirmation; requires --apply
+  --verbose     List every target
+  --self-test   Test deletion and path guards in a temporary directory
+  -h, --help    Show help
+
+Targets user caches, app-container caches, Xcode DerivedData, Simulator
+caches and temp files, unavailable Simulators, Homebrew, Quick Look, and
+current-user temp files.
+
+Never targets /System, /Library, APFS snapshots, swap, backups, documents,
+Application Support, Xcode archives, Trash, or live Simulator app data.
+Quit apps and Xcode first.
+EOF
+}
+
+die() {
+  print -u2 -r -- "$PROGRAM: $*"
+  exit 1
+}
+
+warn() {
+  print -u2 -r -- "warning: $*"
+}
+
+safe_dir() {
+  local kind=$1
+  local dir=${2:A}
+
+  [[ $kind == cache || $kind == temp ]] || return 1
+  [[ -n $TEST_ROOT && $dir == "$TEST_ROOT/"* ]] && return 0
+  [[ $kind == cache && -n $DARWIN_CACHE && $dir == $DARWIN_CACHE &&
+    $dir == /private/var/folders/[^/]##/[^/]##/C ]] && return 0
+  [[ $kind == temp && -n $DARWIN_TEMP && $dir == $DARWIN_TEMP &&
+    $dir == /private/var/folders/[^/]##/[^/]##/T ]] && return 0
+
+  case "$kind:$dir" in
+    cache:"$HOME_REAL"/Library/Caches|\
+    cache:"$HOME_REAL"/.cache|\
+    cache:"$HOME_REAL"/Library/Logs|\
+    cache:"$HOME_REAL"/Library/Developer/Xcode/DerivedData|\
+    cache:"$HOME_REAL"/Library/Developer/CoreSimulator/Caches|\
+    cache:"$HOME_REAL"/Library/Containers/[^/]##/Data/Library/Caches|\
+    cache:"$HOME_REAL"/Library/'Group Containers'/[^/]##/Library/Caches|\
+    cache:"$HOME_REAL"/Library/Developer/CoreSimulator/Devices/[^/]##/data/Library/Caches|\
+    cache:"$HOME_REAL"/Library/Developer/CoreSimulator/Devices/[^/]##/data/Containers/Data/Application/[^/]##/Library/Caches|\
+    cache:"$HOME_REAL"/Library/Developer/CoreSimulator/Devices/[^/]##/data/Containers/Data/PluginKitPlugin/[^/]##/Library/Caches|\
+    temp:"$HOME_REAL"/Library/Containers/[^/]##/Data/tmp|\
+    temp:"$HOME_REAL"/Library/Developer/CoreSimulator/Devices/[^/]##/data/tmp|\
+    temp:"$HOME_REAL"/Library/Developer/CoreSimulator/Devices/[^/]##/data/Containers/Data/Application/[^/]##/tmp|\
+    temp:"$HOME_REAL"/Library/Developer/CoreSimulator/Devices/[^/]##/data/Containers/Data/PluginKitPlugin/[^/]##/tmp|\
+    temp:/private/tmp|\
+    temp:/private/var/tmp)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+discover() {
+  local sim_root="$HOME/Library/Developer/CoreSimulator/Devices"
+
+  CACHE_DIRS=(
+    "$HOME"/Library/Caches(N/F)
+    "$HOME"/.cache(N/F)
+    "$HOME"/Library/Developer/Xcode/DerivedData(N/F)
+    "$HOME"/Library/Developer/CoreSimulator/Caches(N/F)
+    "$HOME"/Library/Containers/*/Data/Library/Caches(N/F)
+    "$HOME"/Library/'Group Containers'/*/Library/Caches(N/F)
+  )
+  TEMP_DIRS=(
+    "$HOME"/Library/Containers/*/Data/tmp(N/F)
+    /private/tmp(N/F)
+    /private/var/tmp(N/F)
+  )
+
+  [[ -n $DARWIN_CACHE ]] && CACHE_DIRS+=("$DARWIN_CACHE")
+  [[ -n $DARWIN_TEMP ]] && TEMP_DIRS+=("$DARWIN_TEMP")
+
+  if (( SIMULATORS )); then
+    CACHE_DIRS+=(
+      "$sim_root"/*/data/Library/Caches(N/F)
+      "$sim_root"/*/data/Containers/Data/Application/*/Library/Caches(N/F)
+      "$sim_root"/*/data/Containers/Data/PluginKitPlugin/*/Library/Caches(N/F)
+    )
+    TEMP_DIRS+=(
+      "$sim_root"/*/data/tmp(N/F)
+      "$sim_root"/*/data/Containers/Data/Application/*/tmp(N/F)
+      "$sim_root"/*/data/Containers/Data/PluginKitPlugin/*/tmp(N/F)
+    )
+  fi
+
+  if (( INCLUDE_LOGS )); then
+    CACHE_DIRS+=("$HOME"/Library/Logs(N/F))
+  fi
+}
+
+confirm_apply() {
+  (( APPLY )) || return 0
+  (( ASSUME_YES )) && return 0
+  [[ -t 0 ]] || die "--apply requires an interactive terminal or --yes"
+
+  print -u2 -r -- "This permanently deletes regenerable caches and selected temp files."
+  print -u2 -n -- "Type CLEAN to continue: "
+  local reply=''
+  IFS= read -r reply
+  [[ $reply == CLEAN ]] || die "cancelled"
+}
+
+clean_dir() {
+  local kind=$1
+  local original=${2%/}
+  local dir=''
+  local -a find_args=()
+
+  [[ -d $original && ! -L $original ]] || return 0
+  dir=${original:A}
+  safe_dir "$kind" "$dir" || die "refusing $kind path: $dir"
+
+  if (( ! APPLY )); then
+    (( VERBOSE )) && print -r -- "would clean $kind: $dir"
+    return 0
+  fi
+
+  find_args=(-x "$dir" -mindepth 1 -user "$USER_ID")
+  if [[ $kind == temp ]]; then
+    (( ALL_TEMP )) || find_args+=(-mtime +3)
+  fi
+
+  if /usr/bin/find "${find_args[@]}" -delete; then
+    (( VERBOSE )) && print -r -- "cleaned $kind: $dir"
+  else
+    warn "could not fully clean $dir"
+    (( FAILURES += 1 ))
+  fi
+}
+
+prepare_simulators() {
+  if ! /usr/bin/xcrun --find simctl >/dev/null 2>&1; then
+    warn "simctl is unavailable; skipping Simulator cleanup"
+    return 0
+  fi
+
+  SIMULATORS=1
+  if (( ! APPLY )); then
+    print -r -- "would run: xcrun simctl shutdown all"
+    print -r -- "would run: xcrun simctl delete unavailable"
+    return 0
+  fi
+
+  if ! /usr/bin/xcrun simctl shutdown all; then
+    warn "could not stop Simulators; skipping their files"
+    SIMULATORS=0
+    (( FAILURES += 1 ))
+    return 0
+  fi
+  if ! /usr/bin/xcrun simctl delete unavailable; then
+    warn "could not delete every unavailable Simulator"
+    (( FAILURES += 1 ))
+  fi
+}
+
+clean_homebrew() {
+  local brew_cmd=''
+  brew_cmd=$(command -v brew 2>/dev/null) || return 0
+
+  if (( ! APPLY )); then
+    print -r -- "would run: brew cleanup --prune=all --scrub"
+  elif ! HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_AUTOREMOVE=1 \
+    "$brew_cmd" cleanup --prune=all --scrub; then
+    warn "Homebrew cleanup did not complete"
+    (( FAILURES += 1 ))
+  fi
+}
+
+reset_quicklook() {
+  [[ -x /usr/bin/qlmanage ]] || return 0
+
+  if (( ! APPLY )); then
+    print -r -- "would run: qlmanage -r cache"
+  elif ! /usr/bin/qlmanage -r cache >/dev/null; then
+    warn "Quick Look cache reset did not complete"
+    (( FAILURES += 1 ))
+  fi
+}
+
+self_test() {
+  local root='' old_file='' new_file=''
+
+  root=$(/usr/bin/mktemp -d /private/tmp/mac-clean-test.XXXXXX)
+  TEST_ROOT=${root:A}
+  HOME_REAL=${HOME:A}
+  USER_ID=$(/usr/bin/id -u)
+  APPLY=1
+
+  /bin/mkdir -p "$root/cache/nested" "$root/temp"
+  /usr/bin/touch "$root/cache/file" "$root/cache/.hidden" "$root/cache/nested/file"
+  clean_dir cache "$root/cache"
+  [[ -z $(/usr/bin/find "$root/cache" -mindepth 1 -print -quit) ]] ||
+    die "self-test failed: cache was not emptied"
+
+  old_file="$root/temp/old"
+  new_file="$root/temp/new"
+  /usr/bin/touch -t 202001010000 "$old_file"
+  /usr/bin/touch "$new_file"
+  clean_dir temp "$root/temp"
+  [[ ! -e $old_file && -e $new_file ]] ||
+    die "self-test failed: stale-temp selection is wrong"
+
+  if safe_dir cache / ||
+    safe_dir cache /private/tmp ||
+    safe_dir cache "$HOME_REAL/Library/Containers/a/extra/Data/Library/Caches"; then
+    die "self-test failed: an unsafe path was accepted"
+  fi
+  /usr/bin/find -x "$root" -delete
+  print -r -- "self-test passed"
+}
+
+main() {
+  local arg='' dir=''
+
+  for arg in "$@"; do
+    case $arg in
+      --apply) APPLY=1 ;;
+      --all-temp) ALL_TEMP=1 ;;
+      --logs) INCLUDE_LOGS=1 ;;
+      --yes) ASSUME_YES=1 ;;
+      --verbose) VERBOSE=1 ;;
+      --self-test) SELF_TEST=1 ;;
+      -h|--help) usage; return 0 ;;
+      *) die "unknown option: $arg (try --help)" ;;
+    esac
+  done
+
+  (( SELF_TEST )) && { self_test; return 0; }
+  (( ASSUME_YES && ! APPLY )) && die "--yes is only valid with --apply"
+  [[ $(/usr/bin/uname -s) == Darwin ]] || die "macOS is required"
+  (( EUID != 0 )) || die "run as your normal user, not with sudo"
+  [[ -n ${HOME:-} && $HOME == /* && $HOME != / ]] || die "HOME is unsafe"
+
+  HOME_REAL=${HOME:A}
+  USER_ID=$(/usr/bin/id -u)
+  DARWIN_CACHE=$(/usr/bin/getconf DARWIN_USER_CACHE_DIR 2>/dev/null) ||
+    DARWIN_CACHE=''
+  DARWIN_TEMP=$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null) ||
+    DARWIN_TEMP=''
+  DARWIN_CACHE=${DARWIN_CACHE%/}
+  DARWIN_TEMP=${DARWIN_TEMP%/}
+  [[ -n $DARWIN_CACHE ]] && DARWIN_CACHE=${DARWIN_CACHE:A}
+  [[ -n $DARWIN_TEMP ]] && DARWIN_TEMP=${DARWIN_TEMP:A}
+  confirm_apply
+  prepare_simulators
+  discover
+
+  print -r -- "mode: $([[ $APPLY == 1 ]] && print apply || print dry-run)"
+  print -r -- "targets: ${#CACHE_DIRS} cache, ${#TEMP_DIRS} temp"
+
+  clean_homebrew
+  for dir in "${CACHE_DIRS[@]}"; do clean_dir cache "$dir"; done
+  for dir in "${TEMP_DIRS[@]}"; do clean_dir temp "$dir"; done
+  reset_quicklook
+
+  if (( APPLY )); then
+    print -r -- "cleanup complete; warnings: $FAILURES"
+  else
+    print -r -- "dry run only; rerun with --apply to delete"
+  fi
+  (( FAILURES == 0 ))
+}
+
+main "$@"
