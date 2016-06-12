@@ -8,17 +8,30 @@ here because they are useful, not because they need to become full projects.
 
 ## Using a Script
 
-Clone the repository, read the script, then run it directly or place it on your
-`PATH`:
+Clone the whole collection:
 
 ```sh
 git clone https://github.com/keys-i/scripts.git
 cd scripts
-./bin/<script> --help
+script='script-name'
+"./bin/$script" --help
 ```
 
-Requirements differ between scripts. Each script should explain its
-dependencies and supported systems in its help text or header.
+Or download one command without cloning the repository:
+
+```sh
+script='script-name'
+curl -fsSLo "$script" \
+  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/$script"
+less "$script"
+chmod +x "$script"
+"./$script" --help
+```
+
+The script's shebang selects the required interpreter, so `eval` and
+`curl | sh` are not needed. Requirements differ between scripts; each one
+should explain its dependencies and supported systems in its help text or
+header.
 
 > [!CAUTION]
 > Read system and cleanup scripts before running them. Use the least privilege
@@ -26,11 +39,11 @@ dependencies and supported systems in its help text or header.
 
 ## File Structure
 
-```text
-bin/  Ready-to-run command-line tools.
-dev/  Helpers for development, repositories, and local workflows.
-lib/  Shared code used by more than one script.
-sys/  Operating-system maintenance, cleanup, and fixes.
+```sh
+bin/  # Ready-to-run command-line tools
+dev/  # Helpers for development, repositories, and local workflows
+lib/  # Shared code used by more than one script
+sys/  # OS maintenance, cleanup, and fixes
 ```
 
 Scripts are grouped by purpose rather than programming language. Platform-
