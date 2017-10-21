@@ -1,0 +1,433 @@
+#!/bin/sh
+#
+# Clean regenerable Linux caches. Dry-run by default.
+
+set -u
+
+PROGRAM=${0##*/}
+APPLY=0
+ALL_TEMP=0
+INCLUDE_LOGS=0
+STORE_GC=0
+ASSUME_YES=0
+VERBOSE=0
+SELF_TEST=0
+SHOW_HELP=0
+FAILURES=0
+TARGETS=0
+
+HOME_REAL=
+CACHE_SOURCE=
+CACHE_HOME_REAL=
+TEST_ROOT=
+USER_ID=
+FIND=
+ROOT_RUNNER=
+SAFE_PATH=/usr/sbin:/usr/bin:/sbin:/bin:/run/current-system/sw/bin:/run/current-system/sw/sbin:/run/current-system/profile/bin:/run/current-system/profile/sbin
+
+usage() {
+  cat <<'EOF'
+Usage: clean [options]
+
+Clean regenerable Linux caches. Nothing is deleted without --apply.
+
+  --apply       Clean after confirmation
+  --all-temp    Delete all current-user /tmp and /var/tmp entries
+  --logs        Keep only 7 days of archived systemd journal logs
+  --store-gc    Garbage-collect unreachable Nix and Guix store objects
+  --yes         Skip confirmation; requires --apply
+  --verbose     List every filesystem target
+  --self-test   Test deletion and path guards in a temporary directory
+  -h, --help    Show help
+
+Supports RPM-OSTree, APT, DNF5/DNF/Yum, Zypper, Pacman, APK, XBPS, and
+Portage. Also cleans XDG, Flatpak, Snap, Firefox, and systemd-tmpfiles data.
+
+Package caches needed for offline reinstall or downgrade may be removed.
+Never cleans package databases, installed packages, /var/lib, /var/spool,
+/run, /dev, /proc, /sys, /boot, swap, kernel memory caches, containers,
+volumes, or the contents of /var/cache directly.
+
+Run as the user whose cache should be cleaned; privileged commands are
+elevated individually. Quit applications first.
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
+
+warn() {
+  printf 'warning: %s\n' "$*" >&2
+}
+
+trusted_tool() {
+  for tool_dir in \
+    /usr/bin /usr/sbin /bin /sbin \
+    /run/current-system/sw/bin /run/current-system/sw/sbin \
+    /run/current-system/profile/bin /run/current-system/profile/sbin; do
+    if [ -x "$tool_dir/$1" ]; then
+      printf '%s\n' "$tool_dir/$1"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run() {
+  local privilege=$1
+  local label=$2
+  local result=0
+  local suffix=
+  shift 2
+
+  if [ "$APPLY" -eq 0 ]; then
+    [ "$privilege" = user ] || suffix=' as root'
+    printf 'would run%s: %s\n' "$suffix" "$label"
+    return 0
+  fi
+
+  if [ "$privilege" = user ]; then
+    "$@" || result=$?
+  elif [ -z "$ROOT_RUNNER" ]; then
+    warn "cannot run as root without sudo or doas: $label"
+    FAILURES=$((FAILURES + 1))
+    return 0
+  elif [ "${ROOT_RUNNER##*/}" = sudo ]; then
+    PATH=$SAFE_PATH "$ROOT_RUNNER" -- "$@" || result=$?
+  else
+    PATH=$SAFE_PATH "$ROOT_RUNNER" "$@" || result=$?
+  fi
+
+  if [ "$result" -ne 0 ]; then
+    warn "command failed ($result): $label"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+safe_dir() {
+  local kind=$1
+  local dir=$2
+  local middle first second
+
+  case "$kind" in cache|temp) ;; *) return 1 ;; esac
+  if [ -n "$TEST_ROOT" ]; then
+    case "$dir" in "$TEST_ROOT"/*) return 0 ;; esac
+  fi
+
+  case "$kind:$dir" in
+    cache:"$CACHE_HOME_REAL")
+      [ -n "$CACHE_HOME_REAL" ]
+      return
+      ;;
+    cache:"$HOME_REAL"/.var/app/*/cache)
+      middle=${dir#"$HOME_REAL/.var/app/"}
+      middle=${middle%/cache}
+      case "$middle" in ''|*/*) return 1 ;; *) return 0 ;; esac
+      ;;
+    cache:"$HOME_REAL"/.mozilla/firefox/*/startupCache)
+      middle=${dir#"$HOME_REAL/.mozilla/firefox/"}
+      middle=${middle%/startupCache}
+      case "$middle" in ''|*/*) return 1 ;; *) return 0 ;; esac
+      ;;
+    cache:"$HOME_REAL"/snap/*/*/.cache)
+      middle=${dir#"$HOME_REAL/snap/"}
+      middle=${middle%/.cache}
+      case "$middle" in
+        */*)
+          first=${middle%%/*}
+          second=${middle#*/}
+          case "$first:$second" in
+            :*|*:|*:*/*) return 1 ;;
+            *:common|*:[0-9]*) return 0 ;;
+          esac
+          ;;
+      esac
+      return 1
+      ;;
+    temp:/tmp|temp:/var/tmp)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+clean_dir() {
+  local kind=$1
+  local original=${2%/}
+  local age=${3:-0}
+  local dir
+
+  [ -d "$original" ] || return 0
+  if [ -L "$original" ]; then
+    warn "skipping symlinked directory: $original"
+    return 0
+  fi
+  dir=$(CDPATH= cd -P "$original" 2>/dev/null && pwd -P) || {
+    warn "cannot resolve directory: $original"
+    FAILURES=$((FAILURES + 1))
+    return 0
+  }
+  safe_dir "$kind" "$dir" || die "refusing $kind path: $dir"
+  TARGETS=$((TARGETS + 1))
+
+  if [ "$APPLY" -eq 0 ]; then
+    [ "$VERBOSE" -eq 0 ] || printf 'would clean %s: %s\n' "$kind" "$dir"
+    return 0
+  fi
+
+  set -- "$dir" -xdev -depth -mindepth 1 -user "$USER_ID"
+  if [ "$kind" = temp ] && [ "$ALL_TEMP" -eq 0 ]; then
+    set -- "$@" -mtime "+$age"
+  fi
+  if ! "$FIND" "$@" -delete; then
+    warn "could not fully clean $dir"
+    FAILURES=$((FAILURES + 1))
+  elif [ "$VERBOSE" -eq 1 ]; then
+    printf 'cleaned %s: %s\n' "$kind" "$dir"
+  fi
+}
+
+clean_packages() {
+  local tool
+  local extra
+
+  if [ -e /run/ostree-booted ] && tool=$(trusted_tool rpm-ostree); then
+    run root 'rpm-ostree cleanup -m' "$tool" cleanup -m
+  elif [ -f /var/lib/dpkg/status ] && tool=$(trusted_tool apt-get); then
+    run root 'apt-get clean' "$tool" clean
+  elif [ -d /etc/zypp ] && tool=$(trusted_tool zypper); then
+    run root 'zypper --non-interactive clean --all' \
+      "$tool" --non-interactive clean --all
+  elif has_rpmdb && tool=$(trusted_tool dnf5); then
+    run root 'dnf5 clean all' "$tool" clean all
+  elif has_rpmdb && tool=$(trusted_tool dnf); then
+    run root 'dnf clean all' "$tool" clean all
+  elif has_rpmdb && tool=$(trusted_tool yum); then
+    run root 'yum clean all' "$tool" clean all
+  elif [ -d /var/lib/pacman/local ] && tool=$(trusted_tool pacman); then
+    run root 'pacman --noconfirm -Scc' "$tool" --noconfirm -Scc
+  elif [ -f /lib/apk/db/installed ] && tool=$(trusted_tool apk); then
+    run root 'apk --purge cache clean' "$tool" --purge cache clean
+  elif [ -d /var/db/xbps ] && tool=$(trusted_tool xbps-remove); then
+    run root 'xbps-remove --yes --clean-cache --clean-cache' \
+      "$tool" --yes --clean-cache --clean-cache
+  elif [ -d /var/db/pkg ] && tool=$(trusted_tool eclean-dist); then
+    run root 'eclean-dist --deep' "$tool" --deep
+    if extra=$(trusted_tool eclean-pkg); then
+      run root 'eclean-pkg --deep' "$extra" --deep
+    fi
+  fi
+
+  if [ "$STORE_GC" -eq 1 ]; then
+    if tool=$(command -v nix-store 2>/dev/null); then
+      run user 'nix-store --gc' "$tool" --gc
+    fi
+    if tool=$(command -v guix 2>/dev/null); then
+      run user 'guix gc' "$tool" gc
+    fi
+  fi
+}
+
+has_rpmdb() {
+  [ -d /var/lib/rpm ] || [ -d /usr/lib/sysimage/rpm ]
+}
+
+clean_user_caches() {
+  local cache_dir
+
+  clean_dir cache "$CACHE_SOURCE"
+  for cache_dir in \
+    "$HOME"/.var/app/*/cache \
+    "$HOME"/.mozilla/firefox/*/startupCache \
+    "$HOME"/snap/*/common/.cache \
+    "$HOME"/snap/*/[0-9]*/.cache; do
+    case "$cache_dir" in "$CACHE_SOURCE"/*) continue ;; esac
+    clean_dir cache "$cache_dir"
+  done
+}
+
+clean_temp() {
+  local tool
+
+  if tool=$(trusted_tool systemd-tmpfiles); then
+    run user 'systemd-tmpfiles --user --clean' "$tool" --user --clean
+    run root 'systemd-tmpfiles --clean' "$tool" --clean
+  elif [ "$ALL_TEMP" -eq 0 ] && [ "$APPLY" -eq 0 ]; then
+    printf 'skipping shared temp: no tmpfiles policy found\n'
+  fi
+  if [ "$ALL_TEMP" -eq 1 ]; then
+    clean_dir temp /tmp 0
+    clean_dir temp /var/tmp 0
+  fi
+}
+
+clean_logs() {
+  local tool
+
+  [ "$INCLUDE_LOGS" -eq 1 ] || return 0
+  if tool=$(trusted_tool journalctl); then
+    run root 'journalctl --rotate --vacuum-time=7d' \
+      "$tool" --rotate --vacuum-time=7d
+  fi
+}
+
+clean_all() {
+  clean_packages
+  clean_temp
+  clean_user_caches
+  clean_logs
+}
+
+confirm_apply() {
+  [ "$APPLY" -eq 1 ] || return 0
+  [ "$ASSUME_YES" -eq 0 ] || return 0
+  [ -t 0 ] || die "--apply requires an interactive terminal or --yes"
+
+  printf 'This permanently deletes regenerable caches and selected temp files.\n' >&2
+  printf 'Type CLEAN to continue: ' >&2
+  IFS= read -r reply
+  [ "$reply" = CLEAN ] || die 'cancelled'
+}
+
+init_paths() {
+  local relative
+
+  [ -n "${HOME:-}" ] && [ "${HOME#/}" != "$HOME" ] && [ "$HOME" != / ] ||
+    die 'HOME is unsafe'
+  HOME_REAL=$(CDPATH= cd -P "$HOME" 2>/dev/null && pwd -P) ||
+    die 'cannot resolve HOME'
+  CACHE_SOURCE=${XDG_CACHE_HOME:-"$HOME/.cache"}
+  case "$CACHE_SOURCE" in
+    "$HOME"/*) relative=${CACHE_SOURCE#"$HOME"/} ;;
+    "$HOME_REAL"/*) relative=${CACHE_SOURCE#"$HOME_REAL"/} ;;
+    *) die 'XDG_CACHE_HOME must be inside HOME' ;;
+  esac
+  case "/$relative/" in */../*) die 'XDG_CACHE_HOME cannot contain ..' ;; esac
+  CACHE_HOME_REAL="$HOME_REAL/$relative"
+  if [ -d "$CACHE_SOURCE" ] && [ ! -L "$CACHE_SOURCE" ]; then
+    CACHE_HOME_REAL=$(CDPATH= cd -P "$CACHE_SOURCE" 2>/dev/null && pwd -P) ||
+      die 'cannot resolve XDG_CACHE_HOME'
+  fi
+  case "$CACHE_HOME_REAL" in
+    "$HOME_REAL"/*) ;;
+    *) die 'XDG_CACHE_HOME resolves outside HOME' ;;
+  esac
+}
+
+self_test() {
+  local root old_file new_file
+
+  FIND=$(trusted_tool find) || die 'find is required'
+  root=$(mktemp -d "${TMPDIR:-/tmp}/linux-clean-test.XXXXXX") ||
+    die 'cannot create test directory'
+  TEST_ROOT=$(CDPATH= cd -P "$root" && pwd -P)
+  HOME_REAL=$(CDPATH= cd -P "$HOME" && pwd -P)
+  CACHE_HOME_REAL="$HOME_REAL/.cache"
+  USER_ID=$(id -u)
+  ALL_TEMP=0
+  mkdir -p "$root/cache/nested" "$root/temp"
+  touch "$root/cache/file" "$root/cache/.hidden" "$root/cache/nested/file"
+
+  APPLY=0
+  clean_dir cache "$root/cache"
+  [ -e "$root/cache/file" ] || die 'self-test failed: dry-run deleted data'
+  APPLY=1
+  clean_dir cache "$root/cache"
+  [ -z "$("$FIND" "$root/cache" -mindepth 1 -print -quit)" ] ||
+    die 'self-test failed: cache was not emptied'
+
+  old_file="$root/temp/old"
+  new_file="$root/temp/new"
+  touch -t 202001010000 "$old_file"
+  touch "$new_file"
+  clean_dir temp "$root/temp" 3
+  [ ! -e "$old_file" ] && [ -e "$new_file" ] ||
+    die 'self-test failed: stale-temp selection is wrong'
+
+  ln -s / "$root/link"
+  clean_dir cache "$root/link" 2>/dev/null
+  [ -L "$root/link" ] || die 'self-test failed: symlink was followed'
+  if safe_dir cache / ||
+    safe_dir cache "$HOME_REAL" ||
+    safe_dir cache /tmp ||
+    safe_dir cache /var/cache ||
+    safe_dir cache "$HOME_REAL/.var/app/a/extra/cache"; then
+    die 'self-test failed: an unsafe path was accepted'
+  fi
+
+  "$FIND" "$root" -xdev -depth -delete
+  printf 'self-test passed\n'
+}
+
+main() {
+  local arg
+  local requested_apply
+  local saved_verbose
+  local mode=dry-run
+  local temp_scope='installed tmpfiles policy'
+
+  for arg in "$@"; do
+    case "$arg" in
+      --apply) APPLY=1 ;;
+      --all-temp) ALL_TEMP=1 ;;
+      --logs) INCLUDE_LOGS=1 ;;
+      --store-gc) STORE_GC=1 ;;
+      --yes) ASSUME_YES=1 ;;
+      --verbose) VERBOSE=1 ;;
+      --self-test) SELF_TEST=1 ;;
+      -h|--help) SHOW_HELP=1 ;;
+      *) die "unknown option: $arg (try --help)" ;;
+    esac
+  done
+
+  [ "$SHOW_HELP" -eq 0 ] || { usage; return 0; }
+  [ "$SELF_TEST" -eq 0 ] || { self_test; return 0; }
+  [ "$ASSUME_YES" -eq 0 ] || [ "$APPLY" -eq 1 ] ||
+    die '--yes is only valid with --apply'
+  [ "$(uname -s)" = Linux ] || die 'Linux is required'
+
+  USER_ID=$(id -u)
+  [ "$USER_ID" -ne 0 ] ||
+    die 'run as a normal user; this script elevates system commands itself'
+  FIND=$(trusted_tool find) || die 'find is required'
+  if [ -x /usr/bin/sudo ]; then
+    ROOT_RUNNER=/usr/bin/sudo
+  elif [ -x /bin/sudo ]; then
+    ROOT_RUNNER=/bin/sudo
+  elif [ -x /usr/bin/doas ]; then
+    ROOT_RUNNER=/usr/bin/doas
+  elif [ -x /bin/doas ]; then
+    ROOT_RUNNER=/bin/doas
+  elif [ -x /run/wrappers/bin/sudo ]; then
+    ROOT_RUNNER=/run/wrappers/bin/sudo
+  fi
+  init_paths
+
+  requested_apply=$APPLY
+  [ "$APPLY" -eq 0 ] || mode=apply
+  [ "$ALL_TEMP" -eq 0 ] || temp_scope='all current-user entries'
+  printf 'mode: %s\n' "$mode"
+  printf 'user cache: %s\n' "$CACHE_HOME_REAL"
+  printf 'temporary data: %s\n' "$temp_scope"
+  if [ "$requested_apply" -eq 1 ]; then
+    APPLY=0
+    saved_verbose=$VERBOSE
+    VERBOSE=1
+    clean_all
+    VERBOSE=$saved_verbose
+    printf 'planned filesystem targets: %s\n' "$TARGETS"
+    APPLY=1
+    confirm_apply
+    TARGETS=0
+    clean_all
+    printf 'cleanup complete; targets: %s; warnings: %s\n' "$TARGETS" "$FAILURES"
+  else
+    clean_all
+    printf 'targets: %s directories; dry run only, rerun with --apply\n' "$TARGETS"
+  fi
+  [ "$FAILURES" -eq 0 ]
+}
+
+main "$@"
