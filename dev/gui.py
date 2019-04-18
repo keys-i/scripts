@@ -68,6 +68,7 @@ OUTPUT_LINE_LIMIT = 8 * 1024
 HELP_SUFFIX = ".help"
 SEARCH_DIRS = ("bin", "dev", "sys")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
+NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 PLATFORMS = {"any", "linux", "macos", "windows"}
 SCRIPT_DECK_THEME = Theme(
     name="script-deck",
@@ -97,6 +98,18 @@ class OptionSpec:
 
 
 @dataclass(frozen=True)
+class ParameterSpec:
+    name: str
+    label: str
+    choices: tuple[tuple[str, str], ...] = ()
+    default: str = ""
+    flag: str | None = None
+    placeholder: str = ""
+    required: bool = False
+    warning: str = ""
+
+
+@dataclass(frozen=True)
 class ScriptSpec:
     script_id: str
     title: str
@@ -104,6 +117,7 @@ class ScriptSpec:
     platform: str
     path: Path
     markdown: str
+    parameters: tuple[ParameterSpec, ...]
     options: tuple[OptionSpec, ...]
     apply_flag: str | None
     yes_flag: str | None
@@ -203,6 +217,78 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
             )
         )
 
+    raw_parameters = metadata.get("parameters", [])
+    if not isinstance(raw_parameters, list):
+        raise GuiError(f"{help_path}: parameters must be a JSON array")
+    parameters: list[ParameterSpec] = []
+    seen_names: set[str] = set()
+    parameter_flags: set[str] = set()
+    for raw_parameter in raw_parameters:
+        if not isinstance(raw_parameter, dict):
+            raise GuiError(f"{help_path}: every parameter must be an object")
+        name = _text(raw_parameter, "name", help_path)
+        if not NAME_PATTERN.fullmatch(name):
+            raise GuiError(f"{help_path}: invalid parameter name {name!r}")
+        if name in seen_names:
+            raise GuiError(f"{help_path}: duplicate parameter name {name}")
+        seen_names.add(name)
+
+        flag = raw_parameter.get("flag")
+        if flag is not None and (
+            not isinstance(flag, str) or not FLAG_PATTERN.fullmatch(flag)
+        ):
+            raise GuiError(f"{help_path}: {name} has an invalid flag")
+        if isinstance(flag, str):
+            lowered_flag = flag.lower()
+            if lowered_flag in seen_flags or lowered_flag in parameter_flags:
+                raise GuiError(f"{help_path}: duplicate parameter flag {flag}")
+            parameter_flags.add(lowered_flag)
+
+        raw_choices = raw_parameter.get("choices", [])
+        if not isinstance(raw_choices, list):
+            raise GuiError(f"{help_path}: {name} choices must be an array")
+        choices: list[tuple[str, str]] = []
+        seen_values: set[str] = set()
+        for raw_choice in raw_choices:
+            if not isinstance(raw_choice, dict):
+                raise GuiError(f"{help_path}: {name} choices must be objects")
+            value = _text(raw_choice, "value", help_path)
+            if "\0" in value or value in seen_values:
+                raise GuiError(f"{help_path}: invalid duplicate choice {value!r}")
+            seen_values.add(value)
+            choices.append((value, _text(raw_choice, "label", help_path)))
+
+        default = raw_parameter.get("default", "")
+        placeholder = raw_parameter.get("placeholder", "")
+        warning = raw_parameter.get("warning", "")
+        for key, value in (
+            ("default", default),
+            ("placeholder", placeholder),
+            ("warning", warning),
+        ):
+            if not isinstance(value, str) or "\0" in value:
+                raise GuiError(f"{help_path}: {name} {key} must be text")
+        if choices and default and default not in seen_values:
+            raise GuiError(f"{help_path}: {name} default is not a choice")
+        required = raw_parameter.get("required", False)
+        if not isinstance(required, bool):
+            raise GuiError(f"{help_path}: {name} required must be true or false")
+        if required and choices and not default:
+            raise GuiError(f"{help_path}: required choice {name} needs a default")
+
+        parameters.append(
+            ParameterSpec(
+                name=name,
+                label=_text(raw_parameter, "label", help_path),
+                choices=tuple(choices),
+                default=default,
+                flag=flag,
+                placeholder=placeholder,
+                required=required,
+                warning=warning.strip(),
+            )
+        )
+
     apply_flag = metadata.get("applyFlag")
     yes_flag = metadata.get("yesFlag")
     if (apply_flag is None) != (yes_flag is None):
@@ -218,6 +304,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
     if len(control_flags) == 1 and apply_flag is not None:
         raise GuiError(f"{help_path}: applyFlag and yesFlag must differ")
     overlap = seen_flags & control_flags
+    overlap |= parameter_flags & control_flags
     if overlap:
         raise GuiError(
             f"{help_path}: apply controls cannot appear in options: "
@@ -233,6 +320,10 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         raise GuiError(f"{help_path}: script escapes the repository") from error
 
     documented = markdown.lower()
+    for parameter in parameters:
+        token = parameter.flag or parameter.name
+        if token.lower() not in documented:
+            raise GuiError(f"{help_path}: {token} is missing from Markdown")
     for flag in options:
         if flag.flag.lower() not in documented:
             raise GuiError(f"{help_path}: {flag.flag} is missing from Markdown")
@@ -247,6 +338,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         platform=platform,
         path=script_path,
         markdown=markdown,
+        parameters=tuple(parameters),
         options=tuple(options),
         apply_flag=apply_flag,
         yes_flag=yes_flag,
@@ -648,8 +740,28 @@ class RunWizard(ModalScreen[RunSelection | None]):
             yield Label(id="wizard-title")
             with ContentSwitcher(initial="wizard-options", id="wizard-pages"):
                 with VerticalScroll(id="wizard-options", classes="wizard-page"):
-                    if not self.script.options:
+                    if not self.script.parameters and not self.script.options:
                         yield Static("This script has no optional flags.")
+                    for index, parameter in enumerate(self.script.parameters):
+                        yield Label(parameter.label)
+                        if parameter.choices:
+                            yield Select(
+                                ((label, value) for value, label in parameter.choices),
+                                allow_blank=not parameter.required,
+                                value=parameter.default or Select.BLANK,
+                                id=f"parameter-{index}",
+                            )
+                        else:
+                            yield Input(
+                                value=parameter.default,
+                                placeholder=parameter.placeholder,
+                                id=f"parameter-{index}",
+                            )
+                        if parameter.warning:
+                            yield Static(
+                                f"⚠ {parameter.warning}",
+                                classes="option-warning",
+                            )
                     for index, option in enumerate(self.script.options):
                         yield Checkbox(
                             f"{option.label}  [dim]{option.flag}[/]",
@@ -699,12 +811,30 @@ class RunWizard(ModalScreen[RunSelection | None]):
         if path is not None:
             self.query_one("#cwd", Input).value = str(path)
 
-    def selected_flags(self) -> tuple[str, ...]:
-        return tuple(
+    def selected_arguments(self) -> tuple[str, ...] | None:
+        arguments: list[str] = []
+        for index, parameter in enumerate(self.script.parameters):
+            widget = self.query_one(f"#parameter-{index}", Input | Select)
+            value = (
+                widget.value.strip()
+                if isinstance(widget, Input)
+                else ""
+                if widget.value is Select.BLANK
+                else str(widget.value)
+            )
+            if parameter.required and not value:
+                self.notify(f"{parameter.label} is required", severity="error")
+                return None
+            if value:
+                if parameter.flag is not None:
+                    arguments.append(parameter.flag)
+                arguments.append(value)
+        arguments.extend(
             option.flag
             for index, option in enumerate(self.script.options)
             if self.query_one(f"#option-{index}", Checkbox).value
         )
+        return tuple(arguments)
 
     def working_directory(self) -> Path | None:
         value = self.query_one("#cwd", Input).value.strip()
@@ -749,17 +879,24 @@ class RunWizard(ModalScreen[RunSelection | None]):
         if directory is None:
             return
         if self.step == 1:
-            flags = self.selected_flags()
+            arguments = self.selected_arguments()
+            if arguments is None:
+                return
             try:
-                preview = display_command(command_for(self.script, flags))
+                preview = display_command(command_for(self.script, arguments))
             except GuiError as error:
                 self.notify(str(error), severity="error")
                 return
             warnings = [
                 option.warning
                 for option in self.script.options
-                if option.flag in flags and option.warning
+                if option.flag in arguments and option.warning
             ]
+            warnings.extend(
+                parameter.warning
+                for parameter in self.script.parameters
+                if parameter.warning
+            )
             caution = "\n".join(f"- {warning}" for warning in warnings)
             flow = (
                 "This runs a read-only preview first. Apply repeats discovery "
@@ -778,7 +915,9 @@ class RunWizard(ModalScreen[RunSelection | None]):
             self.update_step()
             return
 
-        self.dismiss(RunSelection(self.script, self.selected_flags(), directory))
+        arguments = self.selected_arguments()
+        if arguments is not None:
+            self.dismiss(RunSelection(self.script, arguments, directory))
 
 
 class ConfirmApply(ModalScreen[bool]):
@@ -1650,6 +1789,40 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     if not expected.issubset({script.platform for script in scripts}):
         raise GuiError("self-test needs Linux, macOS, and Windows help pages")
 
+    with tempfile.TemporaryDirectory(prefix="scripts-gui-contract-") as directory:
+        contract_root = Path(directory).resolve()
+        script_path = contract_root / "bin" / "probe.py"
+        script_path.parent.mkdir()
+        script_path.write_text("print('ok')\n", encoding="utf-8")
+        metadata = {
+            "summary": "Exercise typed parameters.",
+            "platform": "any",
+            "parameters": [
+                {
+                    "name": "action",
+                    "label": "Action",
+                    "required": True,
+                    "default": "show",
+                    "choices": [{"value": "show", "label": "Show"}],
+                },
+                {
+                    "name": "query",
+                    "label": "Query",
+                    "flag": "--query",
+                    "placeholder": "optional text",
+                },
+            ],
+        }
+        help_path = script_path.with_name("probe.py.help")
+        help_path.write_text(
+            f"---\n{json.dumps(metadata)}\n---\n"
+            "# Probe\n\n`action` and `--query` exercise typed parameters.\n",
+            encoding="utf-8",
+        )
+        probe = parse_help(help_path, contract_root)
+        assert probe.parameters[0].default == "show"
+        assert probe.parameters[1].flag == "--query"
+
     compact = ScriptsApp(root, scripts)
     async with compact.run_test(size=(50, 18)) as pilot:
         await pilot.pause()
@@ -1693,6 +1866,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                 "any",
                 probe,
                 "# Long output",
+                (),
                 (),
                 None,
                 None,
