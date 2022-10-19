@@ -8,30 +8,42 @@ here because they are useful, not because they need to become full projects.
 
 ## Using a Script
 
-Clone the whole collection:
+Run a script without cloning the repository or keeping a local copy:
 
 ```sh
-git clone https://github.com/keys-i/scripts.git
-cd scripts
-script='script-name'
-"./bin/$script" --help
+(
+  script='sys/linux/clean'
+  tmp=$(mktemp) || exit 1
+  trap 'rm -f "$tmp"' EXIT
+  curl -fsSL \
+    "https://raw.githubusercontent.com/keys-i/scripts/main/$script" \
+    -o "$tmp" &&
+    chmod +x "$tmp" &&
+    "$tmp" --help
+)
 ```
 
-Or download one command without cloning the repository:
+Change `script` to any path in this repository. The temporary file is removed
+when the command finishes, and its shebang selects the right interpreter.
 
-```sh
-script='script-name'
-curl -fsSLo "$script" \
-  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/$script"
-less "$script"
-chmod +x "$script"
-"./$script" --help
+For PowerShell scripts:
+
+```powershell
+$script = 'sys/windows/clean.ps1'
+$temp = Join-Path ([IO.Path]::GetTempPath()) "$([guid]::NewGuid()).ps1"
+try {
+    Invoke-WebRequest -UseBasicParsing `
+        "https://raw.githubusercontent.com/keys-i/scripts/main/$script" `
+        -OutFile $temp
+    & $temp
+} finally {
+    Remove-Item $temp -Force -ErrorAction SilentlyContinue
+}
 ```
 
-The script's shebang selects the required interpreter, so `eval` and
-`curl | sh` are not needed. Requirements differ between scripts; each one
-should explain its dependencies and supported systems in its help text or
-header.
+Remote execution still fetches the script, but neither example leaves a copy
+behind. Requirements differ between scripts; check the script before running
+it and use its help text for supported systems and options.
 
 > [!CAUTION]
 > Read system and cleanup scripts before running them. Use the least privilege
