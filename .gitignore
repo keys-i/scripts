@@ -31,5 +31,6 @@ node_modules/
 
 # Runtime leftovers
 .cache/
+slurm-build/
 *.log
 *.tmp

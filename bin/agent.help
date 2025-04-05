@@ -1,0 +1,144 @@
+---
+{
+  "summary": "Clean local agent state, diagnose installations, and find compatible skills.",
+  "platform": "any",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "doctor",
+      "choices": [
+        {"value": "doctor", "label": "Doctor — check installations and configuration"},
+        {"value": "clean", "label": "Clean — wipe selected local state"},
+        {"value": "market", "label": "Market — search or install Agent Skills"}
+      ]
+    },
+    {
+      "name": "kind",
+      "label": "State kind (used by Clean)",
+      "flag": "--kind",
+      "required": true,
+      "default": "sessions",
+      "choices": [
+        {"value": "sessions", "label": "Conversations and session history"},
+        {"value": "memories", "label": "Agent-written durable memories"},
+        {"value": "cache", "label": "Regenerable caches and logs"},
+        {"value": "all", "label": "Sessions, memories, and caches"}
+      ],
+      "warning": "Clean never removes credentials, settings, plugins, skills, or project instruction files."
+    },
+    {
+      "name": "agent",
+      "label": "Agent",
+      "flag": "--agent",
+      "required": true,
+      "default": "all",
+      "choices": [
+        {"value": "all", "label": "Every detected agent"},
+        {"value": "codex", "label": "OpenAI Codex CLI"},
+        {"value": "claude-code", "label": "Anthropic Claude Code"},
+        {"value": "gemini-cli", "label": "Google Gemini CLI"},
+        {"value": "github-copilot", "label": "GitHub Copilot CLI"},
+        {"value": "qwen-code", "label": "Qwen Code"},
+        {"value": "opencode", "label": "OpenCode"},
+        {"value": "kilo", "label": "Kilo Code CLI"},
+        {"value": "cline", "label": "Cline CLI"},
+        {"value": "aider", "label": "Aider"},
+        {"value": "goose", "label": "goose"},
+        {"value": "vibe", "label": "Mistral Vibe CLI"},
+        {"value": "amp", "label": "Amp"},
+        {"value": "cursor", "label": "Cursor Agent CLI"},
+        {"value": "kiro-cli", "label": "Kiro CLI"},
+        {"value": "droid", "label": "Factory Droid"},
+        {"value": "openhands", "label": "OpenHands CLI"},
+        {"value": "pi", "label": "Pi coding agent"},
+        {"value": "rovodev", "label": "Atlassian Rovo Dev CLI"}
+      ]
+    },
+    {
+      "name": "query",
+      "label": "Market search",
+      "flag": "--query",
+      "placeholder": "for example: Python security"
+    },
+    {
+      "name": "source",
+      "label": "Skill source to install",
+      "flag": "--install",
+      "placeholder": "owner/repository"
+    },
+    {
+      "name": "skill",
+      "label": "One skill from that source",
+      "flag": "--skill",
+      "placeholder": "optional skill name"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--fix",
+      "label": "Repair safe doctor findings"
+    },
+    {
+      "flag": "--global",
+      "label": "Install the selected skill for the current user"
+    }
+  ]
+}
+---
+
+# AI agent manager
+
+One command for local AI coding-agent hygiene and the open Agent Skills
+ecosystem. The registry covers Codex, Claude Code, Gemini CLI, Copilot CLI,
+Qwen Code, OpenCode, Kilo, Cline, Aider, goose, Vibe, Amp, Cursor, Kiro,
+Droid, OpenHands, Pi, and Rovo Dev. Market discovery delegates to the open
+`skills` CLI, whose live compatibility table supports more than 70 agents
+without duplicating that fast-changing catalog here.
+
+## Actions
+
+### `doctor`
+
+Finds installed executables, runs version checks, validates JSON/TOML settings,
+checks state-directory permissions, and locates the agent's skill directory.
+Select `--fix` to preview owner-only permission repairs and missing skill
+directories; applying does not install agents or rewrite their settings.
+
+### `clean`
+
+Use `--kind sessions`, `--kind memories`, `--kind cache`, or `--kind all`.
+Only documented local state is targeted. Credentials, API keys, configuration,
+skills, plugins, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and equivalent
+project-authored instructions are excluded.
+
+Close affected agents before applying. Copilot and Amp can sync state to a
+service; deleting local files does not delete remote copies.
+
+### `market`
+
+Enter a `--query` to search interactively. To preview an install, set
+`--install owner/repository`, optionally `--skill name`, choose an `--agent`,
+and select `--global` for user scope. Apply only after reviewing the source:
+skills can bundle executable scripts.
+
+## Direct CLI
+
+```sh
+agent doctor --list-agents
+agent doctor --agent codex --fix
+agent clean sessions --agent claude-code
+agent clean all --agent codex --apply
+agent market "Python security"
+agent market --install vercel-labs/agent-skills --skill find-skills --agent codex
+```
+
+Without `--apply`, destructive and repair commands only print their plan.
+Direct applies require typing `APPLY`; the shared TUI performs its own `CLEAN`
+confirmation and then supplies `--apply --yes`.
+
+See `docs/agent-tools.md` for researched storage, diagnostics, market
+compatibility, and limitations.
