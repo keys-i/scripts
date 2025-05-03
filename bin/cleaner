@@ -185,7 +185,7 @@ def self_test() -> int:
     assert EXPIRY.fullmatch("30.days.ago")
     assert EXPIRY.fullmatch("2.weeks.ago")
     assert not EXPIRY.fullmatch("30 days ago")
-    assert git_command(Path("/tmp/repo"), "status")[-1] == "status"
+    assert git_command(Path.cwd() / "repo", "status")[-1] == "status"
     print("ok: Git audit, expiry, garbage-collection, and rewrite contracts")
     return 0
 

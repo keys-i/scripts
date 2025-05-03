@@ -543,7 +543,7 @@ def self_test() -> int:
             }
         ],
     }
-    runs = expand_config(config, Path("/tmp/jobs.toml"), 10)
+    runs = expand_config(config, Path.cwd() / "jobs.toml", 10)
     assert len(runs) == 4
     assert runs[0].command[-1] == "1"
     rendered = render_script(runs[0])
