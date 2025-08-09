@@ -34,13 +34,28 @@ bin/agent doctor
 bin/disk health
 bin/cleaner git audit
 bin/hardware diagnose --area all
+bin/security-audit audit --scope all --target .
 bin/slurm plan --config slurm.toml
 ```
 
 They use the Python standard library and native operating-system commands.
 Read each adjacent `.help` page in the dashboard, or pass `--help` directly.
 The [agent research](docs/agent-tools.md) records supported clients and cleanup
-limits; the [Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
+limits; the [security research](docs/security-research.md) explains scanner,
+CVE, KEV, and host-check coverage; the
+[Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
+
+Every runnable command under `bin`, `dev`, and `sys` has an adjacent Markdown
+page. Fetch the same page without running its command by appending `.help`:
+
+```sh
+curl -fsSL \
+  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.help"
+```
+
+The JSON front matter drives the dashboard; the Markdown below it remains
+readable in a terminal. For styled output, pipe the same curl command to
+[`glow -`](https://github.com/charmbracelet/glow).
 
 Cleanup scripts always run a preview first. Applying repeats discovery with the
 same settings and requires typing `CLEAN`, so targets can change if the
