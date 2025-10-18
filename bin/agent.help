@@ -1,6 +1,6 @@
 ---
 {
-  "summary": "Clean local agent state, diagnose installations, and find compatible skills.",
+  "summary": "Clean local agent state, diagnose installations, and search indexed compatible skills.",
   "platform": "any",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
@@ -92,12 +92,12 @@
 
 # AI agent manager
 
-One command for local AI coding-agent hygiene and the open Agent Skills
+One command for local AI coding-agent hygiene and the indexed Agent Skills
 ecosystem. The registry covers Codex, Claude Code, Gemini CLI, Copilot CLI,
 Qwen Code, OpenCode, Kilo, Cline, Aider, goose, Vibe, Amp, Cursor, Kiro,
-Droid, OpenHands, Pi, and Rovo Dev. Market discovery delegates to the open
-`skills` CLI, whose live compatibility table supports more than 70 agents
-without duplicating that fast-changing catalog here.
+Droid, OpenHands, Pi, and Rovo Dev. Market discovery delegates to the live
+`skills` CLI index without claiming that any index contains every public or
+private skill.
 
 ## Actions
 
@@ -105,8 +105,9 @@ without duplicating that fast-changing catalog here.
 
 Finds installed executables, runs version checks, validates JSON/TOML settings,
 checks state-directory permissions, and locates the agent's skill directory.
-Select `--fix` to preview owner-only permission repairs and missing skill
-directories; applying does not install agents or rewrite their settings.
+YAML, YAML-derived, and JSONC files are reported as **not parsed**, not as
+validated. Select `--fix` to preview owner-only permission repairs and missing
+skill directories; applying does not install agents or rewrite their settings.
 
 ### `clean`
 
@@ -115,8 +116,23 @@ Only documented local state is targeted. Credentials, API keys, configuration,
 skills, plugins, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and equivalent
 project-authored instructions are excluded.
 
+Codex and OpenCode conversations are enumerated and deleted with native
+non-interactive commands. Codex's documented global `history.jsonl` is also
+removed for session cleanup. Gemini's native listing is shown, then deletion
+is handed off to `gemini --delete-session INDEX_OR_ID` because its
+human-readable listing is not a stable machine interface. Claude's native
+purge combines conversations, auto-memory, and related project state, so it is
+available only through `clean all`; that explicit operation previews every
+project recorded by Claude before applying. Aider's documented history files
+remain current-project scoped.
+
+Managed Copilot, goose, and Cline session databases are never deleted. Use
+Copilot's `/session` UI, `goose session list/remove`, or `cline history`
+instead. Other clients without a verified, separable conversation store have
+no automatic session target.
+
 Close affected agents before applying. Copilot and Amp can sync state to a
-service; deleting local files does not delete remote copies.
+service; local cleanup does not delete remote copies.
 
 ### `market`
 
@@ -130,7 +146,8 @@ skills can bundle executable scripts.
 ```sh
 agent doctor --list-agents
 agent doctor --agent codex --fix
-agent clean sessions --agent claude-code
+agent clean sessions --agent gemini-cli
+agent clean all --agent claude-code
 agent clean all --agent codex --apply
 agent market "Python security"
 agent market --install vercel-labs/agent-skills --skill find-skills --agent codex
@@ -138,7 +155,9 @@ agent market --install vercel-labs/agent-skills --skill find-skills --agent code
 
 Without `--apply`, destructive and repair commands only print their plan.
 Direct applies require typing `APPLY`; the shared TUI performs its own `CLEAN`
-confirmation and then supplies `--apply --yes`.
+confirmation and then supplies `--apply --yes`. Vendor commands invoked by the
+TUI are read-only, explicitly forced, or passed a vendor confirmation flag and
+never expect input from the TUI's closed standard input.
 
 See `docs/agent-tools.md` for researched storage, diagnostics, market
 compatibility, and limitations.

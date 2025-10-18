@@ -68,7 +68,7 @@
     {
       "flag": "--force",
       "label": "Allow a dirty rewrite or immediate expiry",
-      "warning": "Force bypasses git-filter-repo's fresh-clone guard. Inspect the backup bundle first."
+      "warning": "Force allows permanent immediate pruning and bypasses git-filter-repo's fresh-clone guard. Inspect the backup bundle first."
     }
   ]
 }
@@ -94,12 +94,13 @@ It prints object metadata only, not object contents.
 
 Expires unreachable reflog entries and runs `git gc`. The default
 `--expire 30.days.ago` retains recent recovery points; use another Git
-approximate date when needed.
+approximate date when needed. `--expire now` and zero-duration dates are
+rejected unless `--force` is also selected.
 
 ### `dangling`
 
 Shows every unreachable object and a dry-run reflog expiry before applying.
-`--expire now` is rejected unless `--force` is also selected.
+Immediate and zero-duration expiry is rejected unless `--force` is selected.
 
 ### `rewrite`
 

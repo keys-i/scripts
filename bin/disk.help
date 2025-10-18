@@ -54,7 +54,7 @@
 
 # Cross-platform disk manager
 
-Uses `lsblk`, `findmnt`, `fsck`, `smartctl`, `nvme`, and `udisksctl` on Linux;
+Uses `lsblk`, `fsck`, `smartctl`, `nvme`, and `udisksctl` on Linux;
 `diskutil` and optional `smartctl` on macOS; and PowerShell Storage cmdlets on
 Windows. It does not implement a filesystem, SMART parser, or recovery engine.
 

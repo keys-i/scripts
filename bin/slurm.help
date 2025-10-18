@@ -116,6 +116,9 @@ command let only the first job prepare shared input. Remove the matching
 If `[cluster].account` is omitted, an `a_*` Unix group is used. Bunya defaults
 select `gpu_cuda`, one A100, `gpu`, and `cuda80gb`; explicitly set cluster
 values for other sites or CPU jobs. `environment.conda_env` must be absolute.
+Rendered files are private to the current user (`0700`). Do not put secrets in
+the TOML: environment variables are written into the generated batch script.
+Existing output files are never overwritten.
 
 ## Direct CLI
 

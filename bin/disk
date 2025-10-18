@@ -132,21 +132,23 @@ def health(args: argparse.Namespace, platform: str) -> int:
 
 
 def _mounted_linux(target: str) -> bool:
-    findmnt = find_program("findmnt")
-    if not findmnt:
-        return False
+    lsblk = require_program("lsblk")
     result = run(
-        (findmnt, "--noheadings", "--source", target),
+        (lsblk, "--noheadings", "--output", "MOUNTPOINTS", target),
         capture=True,
         check=False,
     )
-    return result.returncode == 0 and bool((result.stdout or "").strip())
+    if result.returncode:
+        raise ToolError(f"could not verify whether {target} is mounted")
+    return bool((result.stdout or "").strip())
 
 
 def repair_steps(platform: str, target: str | None) -> tuple[list[Step], list[Step]]:
     if platform == "linux":
         if not target:
             raise ToolError("Linux repair requires --target /dev/DEVICE")
+        if not Path(target).is_block_device():
+            raise ToolError("Linux repair target must be an existing block device")
         fsck = require_program("fsck")
         verify = [Step("Show the filesystem checker plan", (fsck, "-N", target))]
         repair = [
@@ -269,6 +271,19 @@ def self_test() -> int:
         assert verify[0].command[-2:] == ("verifyVolume", "/")
         assert repair[0].command[-2:] == ("repairVolume", "/")
     assert re.fullmatch(r"(?:/dev/)?disk\d+", "/dev/disk2")
+    try:
+        repair_steps("linux", "/definitely/not/a/block-device")
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("Linux repair accepted a non-block-device target")
+    if sys.platform.startswith("linux") and find_program("lsblk"):
+        try:
+            _mounted_linux("/definitely/not/a/block-device")
+        except ToolError:
+            pass
+        else:
+            raise AssertionError("Linux mount verification failed open")
     print("ok: disk command contracts for Linux, macOS, and Windows")
     return 0
 

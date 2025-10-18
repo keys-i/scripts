@@ -496,8 +496,14 @@ def write_scripts(runs: list[JobRun], output: Path) -> list[Path]:
     output.mkdir(parents=True, exist_ok=True)
     paths = output_paths(runs, output)
     for path, run_spec in zip(paths, runs, strict=True):
-        path.write_text(render_script(run_spec), encoding="utf-8")
-        path.chmod(0o755)
+        try:
+            script = path.open("x", encoding="utf-8", newline="\n")
+        except FileExistsError as error:
+            raise ToolError(f"refusing to overwrite existing output: {path}") from error
+        with script:
+            if os.name != "nt":
+                os.fchmod(script.fileno(), 0o700)
+            script.write(render_script(run_spec))
     return paths
 
 
@@ -517,11 +523,12 @@ def mutate(args: argparse.Namespace, runs: list[JobRun]) -> int:
     ):
         print("Cancelled.")
         return 1
+    sbatch = require_program("sbatch") if args.action == "submit" else None
     paths = write_scripts(runs, output)
     if args.action == "render":
         print(f"Rendered {len(paths)} scripts in {output}")
         return 0
-    sbatch = require_program("sbatch")
+    assert sbatch is not None
     for path, run_spec in zip(paths, runs, strict=True):
         (run_spec.workdir / "logs").mkdir(parents=True, exist_ok=True)
         subprocess.run((sbatch, str(path)), cwd=run_spec.workdir, check=True)
@@ -558,7 +565,16 @@ def self_test() -> int:
             yes=True,
         )
         assert mutate(arguments, runs[:1]) == 0
-        assert len(list(Path(temporary).glob("*.sbatch"))) == 1
+        scripts = list(Path(temporary).glob("*.sbatch"))
+        assert len(scripts) == 1
+        if os.name != "nt":
+            assert scripts[0].stat().st_mode & 0o777 == 0o700
+        try:
+            write_scripts(runs[:1], Path(temporary))
+        except ToolError:
+            pass
+        else:
+            raise AssertionError("existing Slurm output was overwritten")
     print("ok: TOML matrix expansion, branch guard, and batch rendering")
     return 0
 

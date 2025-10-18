@@ -26,6 +26,14 @@ from _common import (
 EXPIRY = re.compile(r"^(?:\d+\.(?:days?|weeks?|months?|years?)\.ago|now)$")
 
 
+def checked_expiry(args: argparse.Namespace) -> str:
+    amount = args.expire.partition(".")[0]
+    immediate = args.expire == "now" or (amount.isdigit() and int(amount) == 0)
+    if immediate and not args.force:
+        raise ToolError("immediate expiry also requires --force")
+    return args.expire
+
+
 def git_command(repo: Path, *arguments: str) -> tuple[str, ...]:
     return (require_program("git"), "-C", str(repo), *arguments)
 
@@ -65,7 +73,7 @@ def audit(repo: Path) -> int:
 
 def gc(args: argparse.Namespace, repo: Path) -> int:
     inventory(repo, fsck=False)
-    expiry = args.expire
+    expiry = checked_expiry(args)
     steps = [
         Step(
             f"Expire unreachable reflog entries older than {expiry}",
@@ -90,9 +98,7 @@ def gc(args: argparse.Namespace, repo: Path) -> int:
 
 
 def dangling(args: argparse.Namespace, repo: Path) -> int:
-    expiry = args.expire
-    if expiry == "now" and not args.force:
-        raise ToolError("--expire now also requires --force")
+    expiry = checked_expiry(args)
     inventory(repo)
     heading("Reflog expiry preview")
     run(
@@ -185,6 +191,18 @@ def self_test() -> int:
     assert EXPIRY.fullmatch("30.days.ago")
     assert EXPIRY.fullmatch("2.weeks.ago")
     assert not EXPIRY.fullmatch("30 days ago")
+    try:
+        checked_expiry(argparse.Namespace(expire="now", force=False))
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("immediate expiry accepted without --force")
+    try:
+        checked_expiry(argparse.Namespace(expire="00.days.ago", force=False))
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("zero-duration expiry accepted without --force")
     assert git_command(Path.cwd() / "repo", "status")[-1] == "status"
     print("ok: Git audit, expiry, garbage-collection, and rewrite contracts")
     return 0
