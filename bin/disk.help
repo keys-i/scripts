@@ -21,20 +21,18 @@
       "name": "target",
       "label": "Disk or volume target",
       "flag": "--target",
-      "placeholder": "/dev/sda, disk2s1, or C"
+      "placeholder": "/dev/sda, disk2s1, C, or Windows disk number 0"
     },
     {
       "name": "tool",
       "label": "Recovery method",
       "flag": "--tool",
-      "required": true,
-      "default": "mount",
       "choices": [
         {"value": "mount", "label": "Mount read-only with the operating system"},
         {"value": "testdisk", "label": "TestDisk partition/filesystem recovery"},
         {"value": "photorec", "label": "PhotoRec signature-based file recovery"}
       ],
-      "warning": "TestDisk and PhotoRec require their own interactive terminal; use the direct CLI for those methods."
+      "warning": "When omitted, Linux/macOS use a read-only mount and Windows uses TestDisk. TestDisk and PhotoRec require their own interactive terminal."
     },
     {
       "name": "destination",
@@ -74,25 +72,35 @@ back up and replace a disk, not something software can repair.
 
 ### `recover`
 
-The default `--tool mount` attempts a read-only mount. `--tool testdisk` opens
-partition recovery. `--tool photorec` carves files and requires a
-`--destination` on another physical disk. Stop writing to a damaged source
-before recovery.
+With no `--tool`, Linux and macOS attempt a read-only mount while Windows opens
+TestDisk. `--tool testdisk` opens partition recovery. `--tool photorec` carves
+files and requires an existing `--destination`. The script rejects a destination
+nested under the source path, but cannot prove that it is on a different
+physical disk; verify that yourself. On Windows it finds the official
+`testdisk_win.exe` or `photorec_win.exe` and source selection stays inside that
+tool; use an Administrator terminal. Stop writing to a damaged source first.
 
 ### `fix`
 
-Runs a read-only verification first. Linux repairs require an unmounted block
-device. macOS uses `diskutil verify/repair`. Windows uses `Repair-Volume -Scan`
-then `-SpotFix`. Back up irreplaceable data before applying.
+Runs a read-only verification first. Linux auto-repair is deliberately limited
+to an unmounted ext2/3/4 filesystem: it uses `e2fsck -f -n`, then the
+conservative preen mode `e2fsck -f -p`; reboot-required exit codes remain
+successful but are called out in the command output. Other Linux filesystems
+need their own repair guidance. macOS uses `diskutil verify/repair`. Windows
+uses `Repair-Volume -Scan` then `-SpotFix` from an Administrator terminal. Back
+up irreplaceable data before applying.
 
 ## Direct CLI
 
 ```sh
 disk show
 disk show --json
+disk show 0
 disk health --target /dev/nvme0
+disk health C
 disk recover /dev/sdb1 --tool mount
 disk recover /dev/sdb --tool photorec --destination /mnt/recovery
+disk recover --tool testdisk
 disk fix /dev/sdb1
 disk fix /dev/sdb1 --apply
 ```

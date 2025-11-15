@@ -43,6 +43,19 @@ def ps(script: str) -> tuple[str, ...]:
     )
 
 
+def _windows_target(target: str | None) -> tuple[str, str] | None:
+    if target is None:
+        return None
+    value = target.strip()
+    drive = value.rstrip(":\\/")
+    if re.fullmatch(r"[A-Za-z]", drive):
+        return "drive", drive.upper()
+    match = re.fullmatch(r"(?:disk)?(\d+)", value, re.IGNORECASE)
+    if match:
+        return "disk", str(int(match.group(1)))
+    raise ToolError("Windows target must be a drive letter or disk number")
+
+
 def show(args: argparse.Namespace, platform: str) -> int:
     target = args.target or args.target_pos
     heading("Disk inventory")
@@ -70,11 +83,29 @@ def show(args: argparse.Namespace, platform: str) -> int:
             print_json(plistlib.loads(result.stdout.encode()))
         return result.returncode
     if platform == "windows":
+        selected = _windows_target(target)
+        if selected is None:
+            query = "$d=Get-Disk;$v=Get-Volume;"
+        elif selected[0] == "drive":
+            drive = selected[1]
+            query = (
+                f"$v=Get-Volume -DriveLetter '{drive}' -ErrorAction Stop;"
+                f"$p=Get-Partition -DriveLetter '{drive}' -ErrorAction Stop;"
+                "$d=Get-Disk -Number $p.DiskNumber -ErrorAction Stop;"
+            )
+        else:
+            number = selected[1]
+            query = (
+                f"$d=Get-Disk -Number {number} -ErrorAction Stop;"
+                f"$v=Get-Partition -DiskNumber {number} "
+                "-ErrorAction SilentlyContinue|Get-Volume "
+                "-ErrorAction SilentlyContinue;"
+            )
         script = (
-            "$d=Get-Disk | Select-Object Number,FriendlyName,SerialNumber,"
+            query + "$d=$d|Select-Object Number,FriendlyName,SerialNumber,"
             "BusType,PartitionStyle,OperationalStatus,HealthStatus,Size,"
             "IsBoot,IsSystem,IsReadOnly,IsOffline;"
-            "$v=Get-Volume | Select-Object DriveLetter,FileSystemLabel,"
+            "$v=$v|Select-Object DriveLetter,FileSystemLabel,"
             "FileSystem,HealthStatus,OperationalStatus,Size,SizeRemaining;"
             + (
                 "[pscustomobject]@{Disks=$d;Volumes=$v}|ConvertTo-Json -Depth 4"
@@ -111,18 +142,33 @@ def health(args: argparse.Namespace, platform: str) -> int:
         return 0
     if platform == "macos":
         diskutil = require_program("diskutil")
-        run((diskutil, "info", target or "/"), check=False)
+        status = run((diskutil, "info", target or "/"), check=False).returncode
+        if status:
+            return status
         if target and (smartctl := find_program("smartctl")):
-            run(elevated((smartctl, "-H", "-A", target)), check=False)
+            return run(elevated((smartctl, "-H", "-A", target)), check=False).returncode
         elif not find_program("smartctl"):
             warning("Install smartmontools for vendor SMART attributes.")
         return 0
     if platform == "windows":
+        selected = _windows_target(target)
+        if selected is None:
+            query = "$d=Get-Disk;"
+        elif selected[0] == "drive":
+            drive = selected[1]
+            query = (
+                f"$p=Get-Partition -DriveLetter '{drive}' -ErrorAction Stop;"
+                "$d=Get-Disk -Number $p.DiskNumber -ErrorAction Stop;"
+            )
+        else:
+            query = f"$d=Get-Disk -Number {selected[1]} -ErrorAction Stop;"
         script = (
-            "Get-PhysicalDisk | ForEach-Object {"
-            "$r=$_|Get-StorageReliabilityCounter -ErrorAction SilentlyContinue;"
-            "[pscustomobject]@{Name=$_.FriendlyName;Serial=$_.SerialNumber;"
-            "Health=$_.HealthStatus;Status=$_.OperationalStatus;"
+            query + "$d|ForEach-Object {$disk=$_;"
+            "$r=$disk|Get-StorageReliabilityCounter "
+            "-ErrorAction SilentlyContinue;"
+            "[pscustomobject]@{DiskNumber=$disk.Number;"
+            "Name=$disk.FriendlyName;Serial=$disk.SerialNumber;"
+            "Health=$disk.HealthStatus;Status=$disk.OperationalStatus;"
             "Temperature=$r.Temperature;Wear=$r.Wear;"
             "ReadErrors=$r.ReadErrorsTotal;WriteErrors=$r.WriteErrorsTotal}}"
             "|Format-Table -AutoSize"
@@ -143,16 +189,50 @@ def _mounted_linux(target: str) -> bool:
     return bool((result.stdout or "").strip())
 
 
+def _linux_filesystem(target: str) -> str:
+    result = run(
+        (
+            require_program("lsblk"),
+            "--nodeps",
+            "--noheadings",
+            "--output",
+            "FSTYPE",
+            target,
+        ),
+        capture=True,
+    )
+    filesystem = (result.stdout or "").strip().casefold()
+    if not filesystem:
+        raise ToolError(f"could not identify the filesystem on {target}")
+    return filesystem
+
+
 def repair_steps(platform: str, target: str | None) -> tuple[list[Step], list[Step]]:
     if platform == "linux":
         if not target:
             raise ToolError("Linux repair requires --target /dev/DEVICE")
         if not Path(target).is_block_device():
             raise ToolError("Linux repair target must be an existing block device")
-        fsck = require_program("fsck")
-        verify = [Step("Show the filesystem checker plan", (fsck, "-N", target))]
+        filesystem = _linux_filesystem(target)
+        if filesystem not in {"ext2", "ext3", "ext4"}:
+            raise ToolError(
+                f"automatic Linux repair supports ext2/3/4, not {filesystem}; "
+                "use that filesystem's native repair guidance"
+            )
+        e2fsck = require_program("e2fsck")
+        verify = [
+            Step(
+                "Check the ext filesystem read-only",
+                elevated((e2fsck, "-f", "-n", target)),
+                ok_codes=(0, 4),
+            )
+        ]
         repair = [
-            Step("Repair the unmounted filesystem", elevated((fsck, "-f", target)))
+            Step(
+                "Repair the unmounted ext filesystem",
+                elevated((e2fsck, "-f", "-p", target)),
+                ok_codes=(0, 1, 2, 3),
+            )
         ]
         return verify, repair
     if platform == "macos":
@@ -166,9 +246,11 @@ def repair_steps(platform: str, target: str | None) -> tuple[list[Step], list[St
             [Step("Repair disk structures", (diskutil, repair_verb, target))],
         )
     if platform == "windows":
-        drive = (target or "C").rstrip(":\\/")
-        if not re.fullmatch(r"[A-Za-z]", drive):
+        selected = _windows_target(target or "C")
+        assert selected is not None
+        if selected[0] != "drive":
             raise ToolError("Windows repair target must be a drive letter")
+        drive = selected[1]
         return (
             [
                 Step(
@@ -189,20 +271,30 @@ def repair_steps(platform: str, target: str | None) -> tuple[list[Step], list[St
 def fix(args: argparse.Namespace, platform: str) -> int:
     target = args.target or args.target_pos
     verify, repair = repair_steps(platform, target)
+    if platform == "linux" and target and _mounted_linux(target):
+        raise ToolError(f"{target} is mounted; unmount it before checking or repair")
     heading("Read-only verification")
     for step in verify:
-        run(step.command, check=False)
-    if platform == "linux" and target and args.apply and _mounted_linux(target):
-        raise ToolError(
-            f"{target} is mounted; unmount it or boot recovery media before repair"
-        )
+        result = run(step.command, check=False)
+        if platform == "linux" and result.returncode not in step.ok_codes:
+            raise ToolError(
+                f"read-only e2fsck failed with exit {result.returncode}; "
+                "repair was not started"
+            )
+        if result.returncode:
+            warning(
+                f"verification exited {result.returncode}; review its findings "
+                "before applying the repair plan"
+            )
     heading("Repair plan")
-    apply_steps(
+    applied = apply_steps(
         repair,
         apply=args.apply,
         yes=args.yes,
         prompt=f"repair {target or 'the system volume'}",
     )
+    if applied and platform == "linux":
+        print("If e2fsck requested a reboot, reboot before remounting the filesystem.")
     return 0
 
 
@@ -212,9 +304,9 @@ def recovery_steps(
     tool: str,
     destination: str | None,
 ) -> list[Step]:
-    if not target:
-        raise ToolError("recovery requires a disk or volume --target")
     if tool == "mount":
+        if not target:
+            raise ToolError("read-only mount recovery requires a volume --target")
         if platform == "macos":
             return [
                 Step(
@@ -230,53 +322,160 @@ def recovery_steps(
                 )
             ]
         raise ToolError("read-only mount recovery is not available on Windows")
-    program = require_program(tool)
     if tool == "testdisk":
-        return [Step("Open TestDisk recovery", (program, target))]
+        if platform == "windows":
+            return [
+                Step(
+                    "Open TestDisk recovery",
+                    (require_program("testdisk_win.exe", "testdisk"),),
+                )
+            ]
+        if not target:
+            raise ToolError("TestDisk recovery requires a device or image --target")
+        return [
+            Step(
+                "Open TestDisk recovery",
+                elevated((require_program(tool), target)),
+            )
+        ]
     if not destination:
         raise ToolError("PhotoRec requires --destination on another disk")
-    source = Path(target).expanduser().resolve()
     output = Path(destination).expanduser().resolve()
-    if source == output or source in output.parents:
-        raise ToolError("recovery destination must not be on the source path")
-    return [Step("Open PhotoRec recovery", (program, "/d", str(output), target))]
+    if not output.is_dir():
+        raise ToolError("PhotoRec destination must be an existing directory")
+    if platform == "windows":
+        command = (
+            require_program("photorec_win.exe", "photorec"),
+            "/d",
+            str(output),
+        )
+    else:
+        if not target:
+            raise ToolError("PhotoRec recovery requires a device or image --target")
+        source = Path(target).expanduser().resolve()
+        if source == output or source in output.parents:
+            raise ToolError("recovery destination must not be on the source path")
+        command = elevated(
+            (require_program(tool), "/d", str(output), target),
+        )
+    return [
+        Step(
+            "Open PhotoRec recovery",
+            command,
+        )
+    ]
+
+
+def recovery_tool(platform: str, requested: str | None) -> str:
+    return requested or ("testdisk" if platform == "windows" else "mount")
 
 
 def recover(args: argparse.Namespace, platform: str) -> int:
+    tool = recovery_tool(platform, args.tool)
     steps = recovery_steps(
         platform,
         args.target or args.target_pos,
-        args.tool,
+        tool,
         args.destination,
     )
     heading("Recovery plan")
-    if args.tool in {"testdisk", "photorec"}:
+    if tool in {"testdisk", "photorec"}:
         warning("Recover files to a different physical disk.")
+        if platform == "windows":
+            warning("Select the source inside the recovery tool's device list.")
         if args.apply and os.environ.get("SCRIPTS_TUI"):
             raise ToolError(
-                f"{args.tool} needs its own interactive terminal; run `disk recover` directly"
+                f"{tool} needs its own interactive terminal; run `disk recover` directly"
             )
     apply_steps(
         steps,
         apply=args.apply,
         yes=args.yes,
-        prompt=f"start {args.tool} recovery",
+        prompt=f"start {tool} recovery",
     )
     return 0
 
 
 def self_test() -> int:
+    from unittest.mock import patch
+
     if find_program("diskutil"):
         verify, repair = repair_steps("macos", "/")
         assert verify[0].command[-2:] == ("verifyVolume", "/")
         assert repair[0].command[-2:] == ("repairVolume", "/")
     assert re.fullmatch(r"(?:/dev/)?disk\d+", "/dev/disk2")
+    assert _windows_target("C:\\") == ("drive", "C")
+    assert _windows_target("disk07") == ("disk", "7")
+    try:
+        _windows_target("0;Remove-Item")
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("Windows target accepted PowerShell syntax")
+    assert recovery_tool("linux", None) == "mount"
+    assert recovery_tool("macos", None) == "mount"
+    assert recovery_tool("windows", None) == "testdisk"
+    assert parse_args(["recover"]).tool is None
+    with (
+        patch.object(Path, "is_block_device", return_value=True),
+        patch(f"{__name__}._linux_filesystem", return_value="ext4"),
+        patch(f"{__name__}.require_program", return_value="e2fsck"),
+        patch(f"{__name__}.elevated", side_effect=tuple),
+    ):
+        verify, repair = repair_steps("linux", "/dev/example")
+    assert verify[0].command[-3:] == ("-f", "-n", "/dev/example")
+    assert verify[0].ok_codes == (0, 4)
+    assert repair[0].command[-3:] == ("-f", "-p", "/dev/example")
+    assert repair[0].ok_codes == (0, 1, 2, 3)
+    with (
+        patch.object(Path, "is_block_device", return_value=True),
+        patch(f"{__name__}._linux_filesystem", return_value="btrfs"),
+    ):
+        try:
+            repair_steps("linux", "/dev/example")
+        except ToolError as error:
+            assert "supports ext2/3/4" in str(error)
+        else:
+            raise AssertionError("Linux repair accepted an unsupported filesystem")
+    with patch(f"{__name__}.require_program", side_effect=lambda *names: names[0]):
+        assert recovery_steps("windows", None, "testdisk", None)[0].command == (
+            "testdisk_win.exe",
+        )
+    verify = [Step("Verify", ("e2fsck",), ok_codes=(0, 4))]
+    repair_args = argparse.Namespace(
+        target="/dev/example",
+        target_pos=None,
+        apply=False,
+        yes=False,
+    )
+    with (
+        patch(f"{__name__}.repair_steps", return_value=(verify, [])),
+        patch(f"{__name__}._mounted_linux", return_value=False),
+        patch(f"{__name__}.run", return_value=argparse.Namespace(returncode=8)),
+    ):
+        try:
+            fix(repair_args, "linux")
+        except ToolError as error:
+            assert "repair was not started" in str(error)
+        else:
+            raise AssertionError("Linux repair continued after an operational failure")
     try:
         repair_steps("linux", "/definitely/not/a/block-device")
     except ToolError:
         pass
     else:
         raise AssertionError("Linux repair accepted a non-block-device target")
+    try:
+        recovery_steps(
+            "linux",
+            "/dev/example",
+            "photorec",
+            "/definitely/not/an/existing-directory",
+        )
+    except ToolError as error:
+        assert "existing directory" in str(error)
+    else:
+        raise AssertionError("PhotoRec accepted a missing destination")
     if sys.platform.startswith("linux") and find_program("lsblk"):
         try:
             _mounted_linux("/definitely/not/a/block-device")
@@ -304,8 +503,7 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--tool",
         choices=("mount", "testdisk", "photorec"),
-        default="mount",
-        help="recovery method",
+        help="recovery method (default: mount, or TestDisk on Windows)",
     )
     parser.add_argument("--destination", help="PhotoRec output directory")
     parser.add_argument(
