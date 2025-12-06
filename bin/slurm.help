@@ -4,6 +4,7 @@
   "platform": "linux",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
+  "applyWhen": ["render", "submit"],
   "parameters": [
     {
       "name": "action",
@@ -30,6 +31,7 @@
       "flag": "--output",
       "required": true,
       "default": "slurm-build",
+      "when": {"action": ["render", "submit"]},
       "placeholder": "slurm-build"
     },
     {
@@ -44,7 +46,8 @@
   "options": [
     {
       "flag": "--json",
-      "label": "Emit the plan as JSON"
+      "label": "Emit the plan as JSON",
+      "when": {"action": ["plan"]}
     }
   ]
 }
