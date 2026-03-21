@@ -32,9 +32,15 @@ CISA_KEV_URL = (
     "known_exploited_vulnerabilities.json"
 )
 SCANNERS = ("osv", "trivy", "gitleaks")
+SCANNER_POLICY_FILES = {
+    "osv": ("osv-scanner.toml",),
+    "trivy": (".trivyignore", ".trivyignore.yaml", "trivy.yaml"),
+    "gitleaks": (".gitleaks.toml", ".gitleaksignore"),
+}
 SEVERITIES = ("info", "low", "medium", "high", "critical")
 SEVERITY_RANK = {name: rank for rank, name in enumerate(SEVERITIES)}
-CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+CVE_PATTERN = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
+CWE_PATTERN = re.compile(r"\bCWE-\d{1,6}\b", re.IGNORECASE)
 ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 MAX_JSON_DEPTH = 24
 MAX_JSON_ITEMS = 100_000
@@ -44,6 +50,8 @@ MAX_SARIF_RUNS = 16
 MAX_SARIF_RULES = 20_000
 MAX_SARIF_RESULTS = 10_000
 MAX_KEV_RECORDS = 100_000
+MAX_KEV_AGE_DAYS = 30
+MAX_ALIASES = 64
 KEV_HOSTS = {"cisa.gov", "www.cisa.gov"}
 BIDI_CONTROLS = {
     "\u061c",
@@ -78,6 +86,11 @@ class Finding:
     aliases: tuple[str, ...] = ()
     references: tuple[str, ...] = ()
     kev: dict[str, str] | None = None
+    cvss_score: float | None = None
+    cvss_vector: str | None = None
+    weaknesses: tuple[str, ...] = ()
+    commit: str | None = None
+    fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,17 +154,17 @@ def _validate_json(
             _validate_json(item, depth=depth + 1, budget=budget)
 
 
-def _nested_text(value: object) -> str:
+def _nested_text(value: object, limit: int = 600) -> str:
     if isinstance(value, dict):
-        return _clean_text(value.get("text") or value.get("markdown"))
-    return _clean_text(value)
+        return _clean_text(value.get("text") or value.get("markdown"), limit)
+    return _clean_text(value, limit)
 
 
 def _object(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _cve_aliases(*values: object) -> tuple[str, ...]:
+def _aliases(pattern: re.Pattern[str], *values: object) -> tuple[str, ...]:
     aliases: set[str] = set()
     pending = list(values)
     budget = 512
@@ -159,12 +172,20 @@ def _cve_aliases(*values: object) -> tuple[str, ...]:
         budget -= 1
         value = pending.pop()
         if isinstance(value, str):
-            aliases.update(match.upper() for match in CVE_PATTERN.findall(value))
+            for match in pattern.finditer(value):
+                aliases.add(match.group(0).upper())
+                if len(aliases) >= MAX_ALIASES:
+                    pending.clear()
+                    break
         elif isinstance(value, list):
             pending.extend(value[:128])
         elif isinstance(value, dict):
             pending.extend(list(value.values())[:128])
     return tuple(sorted(aliases))
+
+
+def _cve_aliases(*values: object) -> tuple[str, ...]:
+    return _aliases(CVE_PATTERN, *values)
 
 
 def _default_kev_cache() -> Path:
@@ -175,6 +196,24 @@ def _default_kev_cache() -> Path:
     else:
         root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     return root / "scripts" / "cisa-kev.json"
+
+
+def _atomic_private_write(path: Path, data: bytes, description: str) -> None:
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ToolError(f"refusing unsafe {description} path: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _execute(
@@ -264,6 +303,7 @@ def _posture(
     remediation: str,
     severity: str = "medium",
     details: str = "",
+    references: tuple[str, ...] = (),
 ) -> Finding:
     if value is True:
         return Finding(
@@ -274,6 +314,7 @@ def _posture(
             "system",
             details or "Enabled.",
             "No action required.",
+            references=references,
         )
     if value is False:
         return Finding(
@@ -284,6 +325,7 @@ def _posture(
             "system",
             issue,
             remediation,
+            references=references,
         )
     return Finding(
         "unknown",
@@ -293,6 +335,7 @@ def _posture(
         "system",
         details or "Could not determine this setting with available native tools.",
         f"Verify manually. {remediation}",
+        references=references,
     )
 
 
@@ -574,54 +617,7 @@ def macos_posture(timeout: int, max_bytes: int) -> list[Finding]:
     return findings
 
 
-def windows_posture(timeout: int, max_bytes: int) -> list[Finding]:
-    powershell = find_program("powershell.exe", "pwsh", "powershell")
-    if not powershell:
-        return [
-            _posture(
-                "windows-posture",
-                "Windows security posture",
-                None,
-                issue="",
-                remediation="Run again with PowerShell available.",
-            )
-        ]
-    script = (
-        "$r=[ordered]@{};"
-        "try{$r.Firewall=(@(Get-NetFirewallProfile -PolicyStore ActiveStore).Enabled "
-        "-notcontains $false)}"
-        "catch{$r.Firewall=$null};"
-        "try{$d=Get-MpComputerStatus;"
-        "$r.Defender=($d.AntivirusEnabled -and $d.RealTimeProtectionEnabled)}"
-        "catch{$r.Defender=$null};"
-        "try{$b=@((Get-BitLockerVolume).ProtectionStatus);"
-        "$r.DiskEncryption=($b.Count -gt 0 -and ($b -notcontains 'Off'))}"
-        "catch{$r.DiskEncryption=$null};"
-        "try{$r.SecureBoot=Confirm-SecureBootUEFI}catch{$r.SecureBoot=$null};"
-        "try{$r.UAC=((Get-ItemProperty "
-        "'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'"
-        ").EnableLUA -eq 1)}catch{$r.UAC=$null};"
-        "try{$r.Updates=((Get-Service wuauserv).StartType -ne 'Disabled')}"
-        "catch{$r.Updates=$null};"
-        "$r|ConvertTo-Json -Compress"
-    )
-    result = _probe(
-        (
-            powershell,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ),
-        timeout,
-        max_bytes,
-    )
-    try:
-        parsed = json.loads(result.output) if result.returncode == 0 else {}
-        values = parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        values = {}
+def _windows_findings(values: dict[str, Any]) -> list[Finding]:
     checks = (
         (
             "windows-firewall",
@@ -666,7 +662,7 @@ def windows_posture(timeout: int, max_bytes: int) -> list[Finding]:
             "medium",
         ),
     )
-    return [
+    findings = [
         _posture(
             identifier,
             title,
@@ -677,6 +673,95 @@ def windows_posture(timeout: int, max_bytes: int) -> list[Finding]:
         )
         for identifier, title, key, remediation, severity in checks
     ]
+    findings.append(
+        _posture(
+            "windows-secure-boot-certificates",
+            "Windows 2023 Secure Boot certificates",
+            (
+                values.get("SecureBootCertificates")
+                if isinstance(values.get("SecureBootCertificates"), bool)
+                else None
+            ),
+            issue=(
+                "The 2023 Secure Boot certificate transition is incomplete or "
+                "reported an error."
+            ),
+            remediation=(
+                "Install current Windows and OEM firmware updates, then follow "
+                "Microsoft's supported certificate-update guidance."
+            ),
+            severity="high",
+            references=(
+                (
+                    "https://support.microsoft.com/en-us/topic/"
+                    "a7be69c9-4634-42e1-9ca1-df06f43f360d"
+                ),
+            ),
+        )
+    )
+    return findings
+
+
+def windows_posture(timeout: int, max_bytes: int) -> list[Finding]:
+    powershell = find_program("powershell.exe", "pwsh", "powershell")
+    if not powershell:
+        return [
+            _posture(
+                "windows-posture",
+                "Windows security posture",
+                None,
+                issue="",
+                remediation="Run again with PowerShell available.",
+            )
+        ]
+    script = (
+        "$r=[ordered]@{};"
+        "try{$p=@(Get-NetFirewallProfile -PolicyStore ActiveStore);"
+        "$r.Firewall=($p.Count -gt 0 -and $p.Enabled -notcontains $false -and "
+        "$p.DefaultInboundAction -notcontains 'Allow')}"
+        "catch{$r.Firewall=$null};"
+        "try{$d=Get-MpComputerStatus;"
+        "$r.Defender=($d.AntivirusEnabled -and $d.RealTimeProtectionEnabled "
+        "-and $d.BehaviorMonitorEnabled -and $d.IoavProtectionEnabled)}"
+        "catch{$r.Defender=$null};"
+        "try{$b=@((Get-BitLockerVolume).ProtectionStatus);"
+        "$r.DiskEncryption=($b.Count -gt 0 -and ($b -notcontains 'Off'))}"
+        "catch{$r.DiskEncryption=$null};"
+        "try{$r.SecureBoot=Confirm-SecureBootUEFI}catch{$r.SecureBoot=$null};"
+        "$status=$null;$certificateError=$null;"
+        "try{$s=Get-ItemProperty "
+        "'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\Servicing';"
+        "$status=$s.UEFICA2023Status;$certificateError=$s.UEFICA2023Error}catch{};"
+        "if($null -eq $status){try{$status=(Get-ItemProperty "
+        "'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecureBoot'"
+        ").UEFICA2023Status}catch{}};"
+        "$r.SecureBootCertificates=($status -eq 'Updated' -and "
+        "($null -eq $certificateError -or $certificateError -eq 0));"
+        "try{$r.UAC=((Get-ItemProperty "
+        "'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System'"
+        ").EnableLUA -eq 1)}catch{$r.UAC=$null};"
+        "try{$r.Updates=((Get-Service wuauserv).StartType -ne 'Disabled')}"
+        "catch{$r.Updates=$null};"
+        "$r|ConvertTo-Json -Compress"
+    )
+    result = _probe(
+        (
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ),
+        timeout,
+        max_bytes,
+    )
+    try:
+        parsed = json.loads(result.output) if result.returncode == 0 else {}
+        values = parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        values = {}
+    return _windows_findings(values)
 
 
 def system_posture(platform: str, timeout: int, max_bytes: int) -> list[Finding]:
@@ -740,6 +825,44 @@ def _validate_kev_catalog(value: dict[str, Any]) -> None:
         )
     if count != len(vulnerabilities):
         raise ToolError("CISA KEV catalog count does not match its vulnerabilities")
+    try:
+        released = datetime.fromisoformat(value["dateReleased"].replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ToolError("CISA KEV catalog has an invalid release date") from error
+    if released.tzinfo is None:
+        raise ToolError("CISA KEV catalog release date needs a timezone")
+    if (released - datetime.now(UTC)).total_seconds() > 86_400:
+        raise ToolError("CISA KEV catalog release date is in the future")
+
+
+def _kev_catalog_finding(
+    value: dict[str, Any],
+    path: Path,
+    count: int,
+    source: str,
+) -> Finding:
+    released = datetime.fromisoformat(value["dateReleased"].replace("Z", "+00:00"))
+    age = max(0, (datetime.now(UTC) - released).days)
+    stale = age > MAX_KEV_AGE_DAYS
+    return Finding(
+        status="unknown" if stale else "pass",
+        severity="info",
+        identifier="cisa-kev",
+        title="CISA Known Exploited Vulnerabilities catalog",
+        source=source,
+        details=(
+            f"Loaded {count} KEV records from catalog "
+            f"{_clean_text(value['catalogVersion'], 80)}, released "
+            f"{_clean_text(value['dateReleased'], 80)} ({age} days old), at "
+            f"{_clean_text(path)}."
+        ),
+        remediation=(
+            "Refresh this stale catalog before relying on exploitation status."
+            if stale
+            else "Refresh the cached catalog regularly."
+        ),
+        references=("https://www.cisa.gov/known-exploited-vulnerabilities-catalog",),
+    )
 
 
 def _kev_records(value: dict[str, Any]) -> dict[str, dict[str, str]]:
@@ -835,17 +958,7 @@ def refresh_kev(path: Path, timeout: int, max_bytes: int) -> None:
     _validate_json(value)
     _validate_kev_catalog(value)
     _kev_records(value)
-    if path.is_symlink():
-        raise ToolError(f"refusing symbolic-link CISA KEV cache: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-        handle.write(data)
-        temporary = Path(handle.name)
-    try:
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _atomic_private_write(path, data, "CISA KEV cache")
 
 
 def load_kev(
@@ -895,36 +1008,42 @@ def load_kev(
                 "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
             ),
         )
-    return records, Finding(
-        status="pass",
-        severity="info",
-        identifier="cisa-kev",
-        title="CISA Known Exploited Vulnerabilities catalog",
-        source="cisa-kev",
-        details=(
-            f"Loaded {len(records)} KEV records from catalog "
-            f"{_clean_text(value['catalogVersion'], 80)}, released "
-            f"{_clean_text(value['dateReleased'], 80)}, at {_clean_text(path)}."
-        ),
-        remediation="Refresh the cached catalog regularly.",
-        references=("https://www.cisa.gov/known-exploited-vulnerabilities-catalog",),
-    )
+    return records, _kev_catalog_finding(value, path, len(records), "cisa-kev")
 
 
-def _sarif_severity(result: dict[str, Any], rule: dict[str, Any]) -> str:
+def _sarif_cvss(
+    result: dict[str, Any],
+    rule: dict[str, Any],
+) -> tuple[float | None, str | None]:
+    score: float | None = None
+    vector: str | None = None
     for properties in (result.get("properties"), rule.get("properties")):
         if not isinstance(properties, dict):
             continue
-        score = properties.get("security-severity")
         try:
-            numeric = float(score)
+            candidate = float(properties.get("security-severity"))
         except (TypeError, ValueError):
-            continue
-        if numeric >= 9:
+            candidate = -1
+        if 0 <= candidate <= 10 and score is None:
+            score = candidate
+        for key, value in properties.items():
+            if (
+                vector is None
+                and "cvss" in str(key).casefold()
+                and isinstance(value, str)
+                and value.upper().startswith("CVSS:")
+            ):
+                vector = _clean_text(value, 300)
+    return score, vector
+
+
+def _sarif_severity(result: dict[str, Any], score: float | None) -> str:
+    if score is not None:
+        if score >= 9:
             return "critical"
-        if numeric >= 7:
+        if score >= 7:
             return "high"
-        if numeric >= 4:
+        if score >= 4:
             return "medium"
         return "low"
     return {"error": "high", "warning": "medium", "note": "low"}.get(
@@ -954,13 +1073,41 @@ def _sarif_remediation(result: dict[str, Any], rule: dict[str, Any]) -> str:
     fixes = result.get("fixes")
     if isinstance(fixes, list) and fixes:
         description = _object(fixes[0]).get("description", {})
-        text = _nested_text(description)
+        text = _nested_text(description, 2_000)
         if text:
             return text
-    help_text = _nested_text(rule.get("help"))
+    help_text = _nested_text(rule.get("help"), MAX_JSON_STRING)
+    marker = help_text.casefold().find("remediation")
+    if marker >= 0:
+        help_text = help_text[marker:]
     return (
-        help_text or "Review the advisory and update, replace, or remove the component."
+        _clean_text(help_text, 2_000)
+        or "Review the advisory and update, replace, or remove the component."
     )
+
+
+def _gitleaks_evidence(
+    result: dict[str, Any],
+    identifier: str,
+) -> tuple[str | None, str | None]:
+    partial = _object(result.get("partialFingerprints"))
+    value = partial.get("commitSha")
+    commit = (
+        value.lower()
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{7,64}", value)
+        else None
+    )
+    locations = result.get("locations")
+    if not commit or not isinstance(locations, list) or not locations:
+        return commit, None
+    physical = _object(_object(locations[0]).get("physicalLocation"))
+    artifact = _object(physical.get("artifactLocation"))
+    region = _object(physical.get("region"))
+    uri = artifact.get("uri")
+    line = region.get("startLine")
+    if not isinstance(uri, str) or not isinstance(line, int) or line < 1:
+        return commit, None
+    return commit, _clean_text(f"{commit}:{uri}:{identifier}:{line}", 600)
 
 
 def parse_sarif(value: dict[str, Any], source: str) -> list[Finding]:
@@ -1027,10 +1174,24 @@ def parse_sarif(value: dict[str, Any], source: str) -> list[Finding]:
                     identifier,
                     title,
                     message,
+                    rule.get("deprecatedIds"),
                     rule.get("properties"),
                     result.get("properties"),
                 )
             )
+            weaknesses = (
+                ()
+                if source == "gitleaks"
+                else _aliases(
+                    CWE_PATTERN,
+                    identifier,
+                    title,
+                    message,
+                    rule.get("properties"),
+                    result.get("properties"),
+                )
+            )
+            cvss_score, cvss_vector = _sarif_cvss(result, rule)
             references: list[str] = []
             help_uri = rule.get("helpUri")
             if isinstance(help_uri, str):
@@ -1045,27 +1206,33 @@ def parse_sarif(value: dict[str, Any], source: str) -> list[Finding]:
                     f"https://osv.dev/vulnerability/{quote(identifier, safe='-')}"
                 )
             if source == "gitleaks":
-                identifier = "gitleaks-secret"
-                title = "Potential secret detected"
+                commit, fingerprint = _gitleaks_evidence(result, identifier)
+                title = f"Potential secret detected: {title}"
                 remediation = (
                     "Revoke and rotate the secret, remove it from current files and "
                     "history, then add a prevention control."
                 )
                 references = ["https://github.com/gitleaks/gitleaks"]
             else:
+                commit = fingerprint = None
                 remediation = _sarif_remediation(result, rule)
             findings.append(
                 Finding(
                     "issue",
-                    _sarif_severity(result, rule),
+                    _sarif_severity(result, cvss_score),
                     _clean_text(identifier, 160),
                     _clean_text(title, 240),
                     source,
                     _clean_text(message),
-                    _clean_text(remediation),
+                    _clean_text(remediation, 2_000),
                     _sarif_location(result),
                     aliases,
                     tuple(dict.fromkeys(references))[:6],
+                    cvss_score=cvss_score,
+                    cvss_vector=cvss_vector,
+                    weaknesses=weaknesses,
+                    commit=commit,
+                    fingerprint=fingerprint,
                 )
             )
     return findings
@@ -1080,15 +1247,13 @@ def enrich_kev(
         if not match:
             continue
         finding.kev = match
-        if SEVERITY_RANK[finding.severity] < SEVERITY_RANK["high"]:
-            finding.severity = "high"
         action = match.get("requiredAction")
         due = match.get("dueDate")
         if action:
             finding.remediation = _clean_text(
                 f"{finding.remediation} CISA KEV priority action: {action}"
-                + (f" Due: {due}." if due else ""),
-                600,
+                + (f" CISA FCEB due date: {due}." if due else ""),
+                2_000,
             )
         kev_url = "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
         finding.references = tuple(dict.fromkeys((*finding.references, kev_url)))
@@ -1100,6 +1265,7 @@ def scanner_command(
     target: Path,
     report: Path,
     timeout: int,
+    gitleaks_mode: str | None = None,
 ) -> list[str]:
     if scanner == "osv":
         command = [
@@ -1130,10 +1296,9 @@ def scanner_command(
             "0",
             str(target),
         ]
-    mode = "git" if (target / ".git").exists() else "dir"
     return [
         executable,
-        mode,
+        gitleaks_mode or "dir",
         "--report-format",
         "sarif",
         "--report-path",
@@ -1141,9 +1306,134 @@ def scanner_command(
         "--redact=100",
         "--no-banner",
         "--timeout",
-        f"{timeout}s",
+        str(timeout),
         str(target),
     ]
+
+
+def _run_scanner_once(
+    scanner: str,
+    executable: str,
+    target: Path,
+    timeout: int,
+    max_bytes: int,
+    gitleaks_mode: str | None = None,
+) -> list[Finding]:
+    scan_id = f"{scanner}-{gitleaks_mode}" if gitleaks_mode else scanner
+    scan_title = (
+        f"{scanner} {gitleaks_mode} scan"
+        if gitleaks_mode
+        else f"{scanner} project scan"
+    )
+    with tempfile.TemporaryDirectory(prefix="security-audit-") as directory:
+        report = Path(directory) / f"{scan_id}.sarif"
+        result = _execute(
+            scanner_command(
+                scanner,
+                executable,
+                target,
+                report,
+                timeout,
+                gitleaks_mode,
+            ),
+            timeout=timeout,
+            max_bytes=min(max_bytes, 65536),
+            watched_file=report,
+        )
+        if result.timed_out:
+            return [
+                Finding(
+                    "unknown",
+                    "info",
+                    f"{scan_id}-timeout",
+                    scan_title,
+                    scanner,
+                    f"Scanner exceeded the {timeout}-second limit.",
+                    "Narrow the target or raise --timeout after reviewing scan scope.",
+                )
+            ]
+        if not report.is_file():
+            detail = "" if scanner == "gitleaks" else _clean_text(result.output, 300)
+            return [
+                Finding(
+                    "unknown",
+                    "info",
+                    f"{scan_id}-error",
+                    scan_title,
+                    scanner,
+                    f"Scanner produced no SARIF report. {detail}".strip(),
+                    "Run security-audit doctor, then run the scanner directly for details.",
+                )
+            ]
+        if report.stat().st_size > max_bytes:
+            return [
+                Finding(
+                    "unknown",
+                    "info",
+                    f"{scan_id}-output-limit",
+                    scan_title,
+                    scanner,
+                    "SARIF report exceeded the configured output limit.",
+                    "Narrow the target and run each project separately.",
+                )
+            ]
+        try:
+            value = _read_json_file(report, max_bytes)
+            findings = parse_sarif(value, scanner)
+        except ToolError as error:
+            return [
+                Finding(
+                    "unknown",
+                    "info",
+                    f"{scan_id}-sarif",
+                    scan_title,
+                    scanner,
+                    _clean_text(error),
+                    "Update the scanner and retry; inspect its raw SARIF if needed.",
+                )
+            ]
+        if findings:
+            if result.returncode not in (0, 1):
+                findings.append(
+                    Finding(
+                        "unknown",
+                        "info",
+                        f"{scan_id}-partial",
+                        f"{scan_title} completeness",
+                        scanner,
+                        f"Findings were parsed, but the scanner exited {result.returncode}.",
+                        "Review scanner diagnostics; the report may be incomplete.",
+                    )
+                )
+            return findings
+        if result.returncode not in (0,):
+            diagnostic = (
+                "Sensitive scanner diagnostics suppressed."
+                if scanner == "gitleaks"
+                else _clean_text(result.output, 300)
+            )
+            return [
+                Finding(
+                    "unknown",
+                    "info",
+                    f"{scan_id}-error",
+                    scan_title,
+                    scanner,
+                    f"Scanner exited {result.returncode}: {diagnostic}",
+                    "Run security-audit doctor, then inspect scanner diagnostics.",
+                )
+            ]
+        return [
+            Finding(
+                "pass",
+                "info",
+                f"{scan_id}-coverage",
+                scan_title,
+                scanner,
+                "The scanner reported no findings in this target.",
+                "Keep dependencies, rules, and scanner databases current.",
+            )
+        ]
 
 
 def run_scanner(
@@ -1165,108 +1455,21 @@ def run_scanner(
                 f"Install {scanner} from its official release channel and run again.",
             )
         ]
-    with tempfile.TemporaryDirectory(prefix="security-audit-") as directory:
-        report = Path(directory) / f"{scanner}.sarif"
-        result = _execute(
-            scanner_command(scanner, executable, target, report, timeout),
-            timeout=timeout,
-            max_bytes=min(max_bytes, 65536),
-            watched_file=report,
+    modes: tuple[str | None, ...] = (None,)
+    if scanner == "gitleaks":
+        modes = ("git", "dir") if (target / ".git").exists() else ("dir",)
+    return [
+        finding
+        for mode in modes
+        for finding in _run_scanner_once(
+            scanner,
+            executable,
+            target,
+            timeout,
+            max_bytes,
+            mode,
         )
-        if result.timed_out:
-            return [
-                Finding(
-                    "unknown",
-                    "info",
-                    f"{scanner}-timeout",
-                    f"{scanner} project scan",
-                    scanner,
-                    f"Scanner exceeded the {timeout}-second limit.",
-                    "Narrow the target or raise --timeout after reviewing scan scope.",
-                )
-            ]
-        if not report.is_file():
-            detail = "" if scanner == "gitleaks" else _clean_text(result.output, 300)
-            return [
-                Finding(
-                    "unknown",
-                    "info",
-                    f"{scanner}-error",
-                    f"{scanner} project scan",
-                    scanner,
-                    f"Scanner produced no SARIF report. {detail}".strip(),
-                    "Run security-audit doctor, then run the scanner directly for details.",
-                )
-            ]
-        if report.stat().st_size > max_bytes:
-            return [
-                Finding(
-                    "unknown",
-                    "info",
-                    f"{scanner}-output-limit",
-                    f"{scanner} project scan",
-                    scanner,
-                    "SARIF report exceeded the configured output limit.",
-                    "Narrow the target and run each project separately.",
-                )
-            ]
-        try:
-            value = _read_json_file(report, max_bytes)
-            findings = parse_sarif(value, scanner)
-        except ToolError as error:
-            return [
-                Finding(
-                    "unknown",
-                    "info",
-                    f"{scanner}-sarif",
-                    f"{scanner} project scan",
-                    scanner,
-                    _clean_text(error),
-                    "Update the scanner and retry; inspect its raw SARIF if needed.",
-                )
-            ]
-        if findings:
-            if result.returncode not in (0, 1):
-                findings.append(
-                    Finding(
-                        "unknown",
-                        "info",
-                        f"{scanner}-partial",
-                        f"{scanner} scan completeness",
-                        scanner,
-                        f"Findings were parsed, but the scanner exited {result.returncode}.",
-                        "Review scanner diagnostics; the report may be incomplete.",
-                    )
-                )
-            return findings
-        if result.returncode not in (0,):
-            diagnostic = (
-                "Sensitive scanner diagnostics suppressed."
-                if scanner == "gitleaks"
-                else _clean_text(result.output, 300)
-            )
-            return [
-                Finding(
-                    "unknown",
-                    "info",
-                    f"{scanner}-error",
-                    f"{scanner} project scan",
-                    scanner,
-                    f"Scanner exited {result.returncode}: {diagnostic}",
-                    "Run security-audit doctor, then inspect scanner diagnostics.",
-                )
-            ]
-        return [
-            Finding(
-                "pass",
-                "info",
-                f"{scanner}-coverage",
-                f"{scanner} project scan",
-                scanner,
-                "The scanner reported no findings in this target.",
-                "Keep dependencies, rules, and scanner databases current.",
-            )
-        ]
+    ]
 
 
 def safe_target(path_text: str | None, force: bool) -> Path:
@@ -1290,6 +1493,38 @@ def safe_target(path_text: str | None, force: bool) -> Path:
 
 def selected_scanners(selection: str) -> tuple[str, ...]:
     return SCANNERS if selection == "auto" else (selection,)
+
+
+def scanner_policy_findings(scanner: str, target: Path) -> list[Finding]:
+    root = target if target.is_dir() else target.parent
+    files = [
+        candidate.name
+        for name in SCANNER_POLICY_FILES[scanner]
+        if (candidate := root / name).is_file() and not candidate.is_symlink()
+    ]
+    prefix = f"{scanner.replace('-', '_').upper()}_"
+    variables = sorted(name for name in os.environ if name.startswith(prefix))
+    if not files and not variables:
+        return []
+    evidence = []
+    if files:
+        evidence.append(f"files: {', '.join(files)}")
+    if variables:
+        evidence.append(f"environment names: {', '.join(variables)}")
+    return [
+        Finding(
+            "unknown",
+            "info",
+            f"{scanner}-policy",
+            f"{scanner} policy and suppression inputs",
+            "policy",
+            _clean_text(
+                "Scanner configuration can change coverage or suppress findings; "
+                + "; ".join(evidence)
+            ),
+            "Review every ignore with an owner, reason, and expiry before treating a clean scan as complete.",
+        )
+    ]
 
 
 def doctor_findings(args: argparse.Namespace) -> list[Finding]:
@@ -1329,6 +1564,8 @@ def doctor_findings(args: argparse.Namespace) -> list[Finding]:
                     "Keep the target narrow enough to review.",
                 )
             )
+    if args.scope not in {"project", "all"}:
+        return findings
     for scanner in selected_scanners(args.scanner):
         name = "osv-scanner" if scanner == "osv" else scanner
         executable = find_program(name)
@@ -1391,20 +1628,7 @@ def doctor_findings(args: argparse.Namespace) -> list[Finding]:
             )
             _validate_kev_catalog(value)
             count = len(_kev_records(value))
-            findings.append(
-                Finding(
-                    "pass",
-                    "info",
-                    "cisa-kev-doctor",
-                    "CISA KEV catalog",
-                    "doctor",
-                    _clean_text(
-                        f"Valid catalog {value['catalogVersion']}, released "
-                        f"{value['dateReleased']}, with {count} CVEs: {catalog}"
-                    ),
-                    "Refresh it regularly with --refresh-kev.",
-                )
-            )
+            findings.append(_kev_catalog_finding(value, catalog, count, "doctor"))
         except ToolError as error:
             findings.append(
                 Finding(
@@ -1457,10 +1681,25 @@ def report(
         "scope": args.scope,
         "target": str(target) if target else None,
         "scanner": args.scanner,
+        "policy": {
+            "fail_on": args.fail_on,
+            "kev_always_fails": args.fail_on != "none",
+            "timeout_seconds": args.timeout,
+        },
         "disclaimer": DISCLAIMER,
         "summary": summary(findings),
         "findings": [asdict(finding) for finding in findings],
     }
+
+
+def write_report(path_text: str, value: dict[str, Any]) -> None:
+    path = Path(path_text).expanduser()
+    data = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise ToolError(
+            f"normalized report exceeds the {MAX_OUTPUT_BYTES}-byte output limit"
+        )
+    _atomic_private_write(path, data, "report output")
 
 
 def render_human(value: dict[str, Any]) -> None:
@@ -1495,11 +1734,24 @@ def render_human(value: dict[str, Any]) -> None:
             print(f"  Location: {finding['location']}")
         if finding["aliases"]:
             print(f"  CVE: {', '.join(finding['aliases'])}")
+        if finding["weaknesses"]:
+            print(f"  CWE: {', '.join(finding['weaknesses'])}")
+        if finding["cvss_score"] is not None:
+            suffix = (
+                f"  Vector: {finding['cvss_vector']}" if finding["cvss_vector"] else ""
+            )
+            print(f"  CVSS: {finding['cvss_score']:.1f}{suffix}")
+        if finding["commit"]:
+            print(f"  Commit: {finding['commit']}")
+        if finding["fingerprint"]:
+            print(f"  Fingerprint: {finding['fingerprint']}")
         print(f"  Detail: {finding['details']}")
         print(f"  Next: {finding['remediation']}")
         if finding["kev"]:
             ransomware = finding["kev"].get("knownRansomwareCampaignUse", "Unknown")
             print(f"  CISA KEV: yes  Known ransomware use: {ransomware}")
+            if due := finding["kev"].get("dueDate"):
+                print(f"  CISA FCEB due date: {due}")
         for reference in finding["references"]:
             print(f"  Reference: {reference}")
     print(color(f"\nNote: {value['disclaimer']}", "2"))
@@ -1510,9 +1762,30 @@ def threshold_failed(findings: list[Finding], threshold: str) -> bool:
         return False
     minimum = SEVERITY_RANK[threshold]
     return any(
-        finding.status == "issue" and SEVERITY_RANK[finding.severity] >= minimum
+        finding.status == "issue"
+        and (finding.kev is not None or SEVERITY_RANK[finding.severity] >= minimum)
         for finding in findings
     )
+
+
+def scanner_incomplete(findings: list[Finding], selection: str) -> bool:
+    incomplete = [
+        finding
+        for finding in findings
+        if finding.status == "unknown" and finding.source in SCANNERS
+    ]
+    if selection != "auto":
+        return bool(incomplete)
+    operational = [
+        finding
+        for finding in incomplete
+        if finding.identifier != f"{finding.source}-coverage"
+    ]
+    completed = any(
+        finding.source in SCANNERS and finding.status in {"pass", "issue"}
+        for finding in findings
+    )
+    return bool(operational) or not completed
 
 
 def audit(args: argparse.Namespace) -> tuple[Path | None, list[Finding]]:
@@ -1531,6 +1804,7 @@ def audit(args: argparse.Namespace) -> tuple[Path | None, list[Finding]]:
         findings.extend(system_posture(host_os(), args.timeout, max_bytes))
     if args.scope in {"project", "all"} and target:
         for scanner in selected_scanners(args.scanner):
+            findings.extend(scanner_policy_findings(scanner, target))
             findings.extend(run_scanner(scanner, target, args.timeout, max_bytes))
     enrich_kev(findings, records)
     return target, findings
@@ -1548,7 +1822,11 @@ def self_test() -> int:
                             {
                                 "id": "GHSA-fixture",
                                 "shortDescription": {"text": "Fixture CVE-2025-12345"},
-                                "properties": {"security-severity": "9.1"},
+                                "deprecatedIds": ["CVE-2025-12345"],
+                                "properties": {
+                                    "security-severity": "9.1",
+                                    "tags": ["CWE-79"],
+                                },
                                 "helpUri": "https://example.invalid/advisory",
                             }
                         ],
@@ -1587,9 +1865,14 @@ def self_test() -> int:
     findings = parse_sarif(sarif, "osv")
     _validate_kev_catalog(kev)
     records = _kev_records(kev)
+    assert _kev_catalog_finding(kev, Path("fixture.json"), 1, "test").status == (
+        "unknown"
+    )
     enrich_kev(findings, records)
     assert len(findings) == 1
     assert findings[0].severity == "critical"
+    assert findings[0].cvss_score == 9.1
+    assert findings[0].weaknesses == ("CWE-79",)
     assert findings[0].location == "lock.json:7"
     assert findings[0].aliases == ("CVE-2025-12345",)
     assert findings[0].kev and findings[0].kev["dueDate"] == "2026-01-01"
@@ -1610,6 +1893,15 @@ def self_test() -> int:
                         {
                             "ruleId": "generic-api-key",
                             "message": {"text": "secret-value-must-not-survive"},
+                            "partialFingerprints": {"commitSha": "0123456789abcdef"},
+                            "locations": [
+                                {
+                                    "physicalLocation": {
+                                        "artifactLocation": {"uri": "secret.env"},
+                                        "region": {"startLine": 3},
+                                    }
+                                }
+                            ],
                         }
                     ],
                 }
@@ -1618,6 +1910,13 @@ def self_test() -> int:
         "gitleaks",
     )[0]
     assert "secret-value" not in secret.details
+    assert secret.identifier == "generic-api-key"
+    assert secret.commit == "0123456789abcdef"
+    assert secret.fingerprint == ("0123456789abcdef:secret.env:generic-api-key:3")
+    assert _cve_aliases("CVE-2026-12345678") == ("CVE-2026-12345678",)
+    assert len(_cve_aliases(*(f"CVE-2026-{number:04d}" for number in range(100)))) == (
+        MAX_ALIASES
+    )
     assert "\x1b" not in _clean_text("\x1b[31mwarning\u202e")
     hostile = {"version": "2.1.0", "runs": [{"tool": []}]}
     try:
@@ -1634,11 +1933,64 @@ def self_test() -> int:
             Path("report.sarif"),
             12,
         )[-2]
-        == "12s"
+        == "12"
     )
+    windows = _windows_findings({"SecureBootCertificates": False})
+    certificate = next(
+        finding
+        for finding in windows
+        if finding.identifier == "windows-secure-boot-certificates"
+    )
+    assert certificate.status == "issue" and certificate.references
+    low_kev = Finding(
+        "issue",
+        "low",
+        "fixture-low",
+        "Low finding in KEV",
+        "osv",
+        "Fixture.",
+        "Review.",
+        aliases=("CVE-2025-12345",),
+    )
+    enrich_kev([low_kev], records)
+    assert low_kev.severity == "low" and threshold_failed([low_kev], "critical")
+    assert len(doctor_findings(parse_args(["doctor", "--scope", "system"]))) == 1
+    with tempfile.TemporaryDirectory(prefix="security-report-test-") as directory:
+        output = Path(directory) / "report.json"
+        write_report(output.as_posix(), {"secret": "redacted"})
+        assert json.loads(output.read_text()) == {"secret": "redacted"}
+        if os.name != "nt":
+            assert stat.S_IMODE(output.stat().st_mode) == 0o600
+        (output.parent / ".gitleaksignore").write_text(
+            "fixture\n",
+            encoding="utf-8",
+        )
+        policy = scanner_policy_findings("gitleaks", output.parent)
+        assert policy and policy[0].source == "policy"
+    missing = Finding(
+        "unknown",
+        "info",
+        "osv-coverage",
+        "OSV unavailable",
+        "osv",
+        "Missing.",
+        "Install it.",
+    )
+    completed = Finding(
+        "pass",
+        "info",
+        "trivy-coverage",
+        "Trivy completed",
+        "trivy",
+        "Complete.",
+        "Keep it current.",
+    )
+    assert scanner_incomplete([missing], "auto")
+    assert not scanner_incomplete([missing, completed], "auto")
+    assert scanner_incomplete([missing], "osv")
     assert threshold_failed(findings, "high")
     assert not threshold_failed(findings, "none")
-    print("ok: SARIF parsing, secret redaction, CVE/KEV enrichment, and thresholds")
+    print("ok: bounded evidence, redaction, CVE/KEV policy, OS checks, and reports")
     return 0
 
 
@@ -1698,6 +2050,12 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--json", action="store_true", help="machine-readable report")
     parser.add_argument(
+        "--output",
+        type=_safe_cli_text,
+        metavar="FILE",
+        help="also write the full redacted JSON report to a private file",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="allow an explicitly requested filesystem-root or home scan",
@@ -1720,7 +2078,11 @@ def main(arguments: list[str] | None = None) -> int:
         else:
             target, findings = audit(args)
         value = report(args, target, findings)
+        if args.output:
+            write_report(args.output, value)
         print_json(value) if args.json else render_human(value)
+        if args.command == "audit" and scanner_incomplete(findings, args.scanner):
+            return 2
         return 1 if threshold_failed(findings, args.fail_on) else 0
     except (ToolError, OSError) as error:
         message = _clean_text(error)

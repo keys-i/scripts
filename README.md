@@ -38,6 +38,15 @@ bin/security-audit audit --scope all --target .
 bin/slurm plan --config slurm.toml
 ```
 
+From a local checkout, the OS-aware launcher lists only compatible commands
+and accepts the same arguments:
+
+```sh
+./run.sh list
+./run.sh security-audit audit --scope system
+./run.sh clean
+```
+
 They use the Python standard library and native operating-system commands.
 Read each adjacent `.help` page in the dashboard, or pass `--help` directly.
 The [agent research](docs/agent-tools.md) records supported clients and cleanup

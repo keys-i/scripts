@@ -128,6 +128,7 @@ class ScriptSpec:
     options: tuple[OptionSpec, ...]
     apply_flag: str | None
     yes_flag: str | None
+    finding_exit_codes: tuple[int, ...] = ()
     apply_when: tuple[str, ...] = ()
     direct_when: tuple[str, ...] = ()
     launchable: bool = True
@@ -144,6 +145,9 @@ class ScriptSpec:
 
     def needs_direct_terminal(self, arguments: Iterable[str]) -> bool:
         return bool(set(arguments).intersection(self.direct_when))
+
+    def has_findings(self, exit_code: int) -> bool:
+        return exit_code in self.finding_exit_codes
 
 
 @dataclass(frozen=True)
@@ -431,6 +435,17 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
     launchable = metadata.get("launchable", True)
     if not isinstance(launchable, bool):
         raise GuiError(f"{help_path}: launchable must be true or false")
+    raw_finding_codes = metadata.get("findingExitCodes", [])
+    if (
+        not isinstance(raw_finding_codes, list)
+        or any(
+            type(code) is not int or not 1 <= code <= 255 for code in raw_finding_codes
+        )
+        or len(set(raw_finding_codes)) != len(raw_finding_codes)
+    ):
+        raise GuiError(
+            f"{help_path}: findingExitCodes must contain unique integers from 1 to 255"
+        )
 
     script_path = Path(str(help_path)[: -len(HELP_SUFFIX)]).resolve()
     if not script_path.is_file():
@@ -463,6 +478,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         options=tuple(options),
         apply_flag=apply_flag,
         yes_flag=yes_flag,
+        finding_exit_codes=tuple(raw_finding_codes),
         apply_when=apply_when,
         direct_when=direct_when,
         launchable=launchable,
@@ -470,12 +486,10 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
 
 
 def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
-    help_paths = (
-        path
-        for directory in SEARCH_DIRS
-        if (root / directory).is_dir()
-        for path in (root / directory).rglob(f"*{HELP_SUFFIX}")
-    )
+    help_paths = list(root.glob(f"*{HELP_SUFFIX}"))
+    for directory in SEARCH_DIRS:
+        if (root / directory).is_dir():
+            help_paths.extend((root / directory).rglob(f"*{HELP_SUFFIX}"))
     scripts = tuple(
         sorted(
             (parse_help(path.resolve(), root) for path in help_paths),
@@ -1863,10 +1877,16 @@ class ScriptsApp(App[None]):
         phase: str,
         result: RunResult,
     ) -> None:
-        status = "cancelled" if result.cancelled else str(result.exit_code)
+        status = (
+            "cancelled"
+            if result.cancelled
+            else "findings"
+            if script.has_findings(result.exit_code)
+            else str(result.exit_code)
+        )
         style = (
             "yellow"
-            if result.cancelled
+            if result.cancelled or script.has_findings(result.exit_code)
             else "green"
             if result.exit_code == 0
             else "red"
@@ -1980,6 +2000,8 @@ class ScriptsApp(App[None]):
             if result.cancelled
             else "passed"
             if result.exit_code == 0
+            else "findings"
+            if selection.script.has_findings(result.exit_code)
             else "failed"
         )
         self.query_one("#activity-heading", Label).update(
@@ -2074,7 +2096,8 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     if not expected.issubset({script.platform for script in scripts}):
         raise GuiError("self-test needs Linux, macOS, and Windows help pages")
     documented = {script.path for script in scripts}
-    commands = {
+    commands = {path.resolve() for path in root.iterdir() if _is_command(path)}
+    commands |= {
         path.resolve()
         for directory in SEARCH_DIRS
         if (root / directory).is_dir()
@@ -2108,6 +2131,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             "yesFlag": "--yes",
             "applyWhen": ["fix"],
             "directWhen": ["fix"],
+            "findingExitCodes": [1],
             "launchable": False,
             "parameters": [
                 {
@@ -2143,6 +2167,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert not probe.needs_apply(("show",))
         assert probe.needs_apply(("fix",))
         assert probe.needs_direct_terminal(("fix",))
+        assert probe.has_findings(1) and not probe.has_findings(2)
         assert not conditions_match(
             probe.parameters[1].when,
             {"action": "show"},
