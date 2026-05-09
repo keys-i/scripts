@@ -31,7 +31,7 @@
 
 # Responsive scripts dashboard
 
-Discovers adjacent `.help` pages under `bin`, `dev`, and `sys`, then renders
+Discovers adjacent `.man` manuals under `bin`, `dev`, and `sys`, then renders
 their Markdown, typed parameters, warnings, progress, files, and command output
 in one keyboard- and mouse-friendly interface.
 

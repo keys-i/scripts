@@ -8,7 +8,7 @@
 
 # OS-aware script launcher
 
-`run.sh` reads the existing adjacent `.help` contracts under `bin`, `dev`, and
+`run.sh` reads the existing adjacent `.man` contracts under `bin`, `dev`, and
 `sys`; it does not maintain a second script list. It detects Linux, macOS, or
 Windows internally, hides incompatible and non-launchable commands, and never
 uses `eval`.

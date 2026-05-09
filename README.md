@@ -48,18 +48,18 @@ and accepts the same arguments:
 ```
 
 They use the Python standard library and native operating-system commands.
-Read each adjacent `.help` page in the dashboard, or pass `--help` directly.
+Read each adjacent `.man` page in the dashboard, or pass `--help` directly.
 The [agent research](docs/agent-tools.md) records supported clients and cleanup
 limits; the [security research](docs/security-research.md) explains scanner,
 CVE, KEV, and host-check coverage; the
 [Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
 
 Every runnable command under `bin`, `dev`, and `sys` has an adjacent Markdown
-page. Fetch the same page without running its command by appending `.help`:
+manual. Fetch it without running the command by appending `.man`:
 
 ```sh
 curl -fsSL \
-  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.help"
+  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man"
 ```
 
 The JSON front matter drives the dashboard; the Markdown below it remains

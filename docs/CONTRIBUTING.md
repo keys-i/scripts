@@ -69,7 +69,7 @@ Only clean, understandable, and tested scripts are accepted.
 - Keep dependencies to the minimum and document every non-standard dependency.
 - Make destructive behaviour explicit. Prefer a dry run or confirmation before
   deleting or overwriting data.
-- Give every script shown in the dashboard an adjacent `<script>.help` file.
+- Give every script shown in the dashboard an adjacent `<script>.man` file.
   Start it with JSON front matter describing its platform and options, then
   write concise Markdown help. Destructive scripts must declare matching
   `applyFlag` and `yesFlag` values.
@@ -81,7 +81,7 @@ Only clean, understandable, and tested scripts are accepted.
 - Add the smallest repeatable test or self-check that would catch the bug
   returning. If automation is impractical, document the exact manual check.
 
-When changing a script or its help page, also run the dashboard contract and
+When changing a script or its manual, also run the dashboard contract and
 responsive-layout check:
 
 ```sh

@@ -1,4 +1,4 @@
-"""OS-aware launcher for commands documented by adjacent .help files."""
+"""OS-aware launcher for commands documented by adjacent .man files."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 SEARCH_DIRS = ("bin", "dev", "sys")
+MAN_SUFFIX = ".man"
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".py", ".sh"}
 
@@ -50,7 +51,7 @@ def catalog(root: Path) -> list[dict[str, object]]:
         base = root / directory
         if not base.is_dir():
             continue
-        for help_path in sorted(base.rglob("*.help")):
+        for help_path in sorted(base.rglob(f"*{MAN_SUFFIX}")):
             value = metadata(help_path)
             platform = value.get("platform")
             summary = value.get("summary")
@@ -61,7 +62,7 @@ def catalog(root: Path) -> list[dict[str, object]]:
                 raise LauncherError(f"missing summary in {help_path}")
             if not isinstance(launchable, bool):
                 raise LauncherError(f"invalid launchable value in {help_path}")
-            script = Path(str(help_path)[: -len(".help")])
+            script = Path(str(help_path)[: -len(MAN_SUFFIX)])
             if script.is_symlink() or not script.is_file():
                 raise LauncherError(f"unsafe or missing script for {help_path}")
             script_id = script.relative_to(root).as_posix()
