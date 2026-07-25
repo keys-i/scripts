@@ -143,13 +143,15 @@ jobs:
       - name: Test command tools
         shell: bash
         run: |
-          mapfile -t scripts < <(
+          found=0
+          while IFS= read -r script; do
+            [[ -n "$script" ]] || continue
+            found=1
+            uv run --script "$script" --self-test
+          done < <(
             git grep -Il '^#!/usr/bin/env -S uv run --script' -- 'bin/*' || true
           )
-          for script in "${scripts[@]}"; do
-            uv run --script "$script" --self-test
-          done
-          (( ${#scripts[@]} )) || echo "No Python command tools found"
+          (( found )) || echo "No Python command tools found"
 
   metadata:
     name: Repository files
