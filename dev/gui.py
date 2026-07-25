@@ -486,10 +486,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
 
 
 def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
-    help_paths = list(root.glob(f"*{MAN_SUFFIX}"))
-    for directory in SEARCH_DIRS:
-        if (root / directory).is_dir():
-            help_paths.extend((root / directory).rglob(f"*{MAN_SUFFIX}"))
+    help_paths = manual_paths(root, MAN_SUFFIX)
     scripts = tuple(
         sorted(
             (parse_help(path.resolve(), root) for path in help_paths),
@@ -499,6 +496,14 @@ def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
     if not scripts:
         raise GuiError(f"{root}: no adjacent *{MAN_SUFFIX} pages found")
     return scripts
+
+
+def manual_paths(root: Path, suffix: str) -> list[Path]:
+    paths = list(root.glob(f"*{suffix}"))
+    for directory in SEARCH_DIRS:
+        if (root / directory).is_dir():
+            paths.extend((root / directory).rglob(f"*{suffix}"))
+    return paths
 
 
 def _valid_root(path: Path) -> bool:
@@ -1338,6 +1343,22 @@ class ScriptsApp(App[None]):
         height: 1fr;
     }
 
+    #help MarkdownH1 {
+        color: $accent;
+    }
+
+    #help MarkdownH2 {
+        color: $primary;
+    }
+
+    #help MarkdownH3 {
+        color: $secondary;
+    }
+
+    #help MarkdownBlockQuote {
+        border-left: outer $warning;
+    }
+
     #activity-heading {
         height: 2;
         color: $accent;
@@ -2095,6 +2116,10 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     assert color.plain == "color" and color.spans
     if not expected.issubset({script.platform for script in scripts}):
         raise GuiError("self-test needs Linux, macOS, and Windows manuals")
+    legacy = sorted(path.relative_to(root) for path in manual_paths(root, ".help"))
+    if legacy:
+        names = ", ".join(path.as_posix() for path in legacy)
+        raise GuiError(f"legacy .help manuals remain: {names}")
     documented = {script.path for script in scripts}
     commands = {path.resolve() for path in root.iterdir() if _is_command(path)}
     commands |= {
@@ -2108,6 +2133,10 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     if missing:
         names = ", ".join(path.as_posix() for path in missing)
         raise GuiError(f"commands missing adjacent {MAN_SUFFIX} manuals: {names}")
+    orphaned = sorted(path.relative_to(root) for path in documented - commands)
+    if orphaned:
+        names = ", ".join(path.as_posix() for path in orphaned)
+        raise GuiError(f"manuals without runnable commands: {names}")
     hostile_preview = "path/```\n# forged review"
     fenced_preview = markdown_code_block(hostile_preview)
     assert fenced_preview.splitlines()[0] == "````text"
@@ -2117,7 +2146,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         None,
     )
     if dashboard is None or dashboard.launchable:
-        raise GuiError("dashboard help must be present and non-launchable")
+        raise GuiError("dashboard manual must be present and non-launchable")
 
     with tempfile.TemporaryDirectory(prefix="scripts-gui-contract-") as directory:
         contract_root = Path(directory).resolve()
@@ -2183,6 +2212,10 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         help_region = compact.query_one("#help", Markdown).region
         assert details.height > 0 and details.y < compact.size.height
         assert help_region.height > 0 and help_region.y < compact.size.height
+        for script in scripts:
+            compact.show_script(script)
+            await pilot.pause()
+            assert compact.selected is script
         compact.show_script(dashboard)
         assert compact.query_one("#run", Button).disabled
         compact.action_run()
@@ -2290,7 +2323,7 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="validate help contracts and render compact and wide layouts",
+        help="validate manual contracts and render compact and wide layouts",
     )
     return parser.parse_args(arguments)
 

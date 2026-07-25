@@ -9,7 +9,7 @@ here because they are useful, not because they need to become full projects.
 ## Using a Script
 
 The easiest way to use the collection is the interactive dashboard. It finds
-the right script, renders its help page, guides you through the available
+the right script, renders its manual, guides you through the available
 options, and streams the output:
 
 ```sh
@@ -54,17 +54,19 @@ limits; the [security research](docs/security-research.md) explains scanner,
 CVE, KEV, and host-check coverage; the
 [Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
 
-Every runnable command under `bin`, `dev`, and `sys` has an adjacent Markdown
-manual. Fetch it without running the command by appending `.man`:
+Every runnable command under `bin`, `dev`, and `sys` has one adjacent Markdown
+manual. Render it in color without running the command:
 
 ```sh
 curl -fsSL \
-  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man"
+  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man" |
+  glow -
 ```
 
-The JSON front matter drives the dashboard; the Markdown below it remains
-readable in a terminal. For styled output, pipe the same curl command to
-[`glow -`](https://github.com/charmbracelet/glow).
+[`glow`](https://github.com/charmbracelet/glow) hides the dashboard metadata
+and colors headings, callouts, tables, and code. Omit `| glow -` for portable
+plain Markdown. The dashboard applies the selected terminal theme to the same
+content, so there is no second help source to drift.
 
 Cleanup scripts always run a preview first. Applying repeats discovery with the
 same settings and requires typing `CLEAN`, so targets can change if the

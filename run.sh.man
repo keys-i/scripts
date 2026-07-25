@@ -8,10 +8,12 @@
 
 # OS-aware script launcher
 
-`run.sh` reads the existing adjacent `.man` contracts under `bin`, `dev`, and
-`sys`; it does not maintain a second script list. It detects Linux, macOS, or
-Windows internally, hides incompatible and non-launchable commands, and never
-uses `eval`.
+`run.sh` reads the adjacent `.man` contracts under `bin`, `dev`, and `sys`; it
+does not maintain a second script list.
+
+> **Behavior:** The launcher detects Linux, macOS, or Windows internally,
+> hides incompatible and non-launchable commands, passes arguments unchanged,
+> and never uses `eval`.
 
 The launcher needs Python 3. Commands whose shebang declares `uv` also need
 `uv`, so their inline dependency contracts remain isolated and reproducible.
@@ -19,16 +21,34 @@ The launcher needs Python 3. Commands whose shebang declares `uv` also need
 ## Usage
 
 ```sh
+./run.sh --help
 ./run.sh list
 ./run.sh security-audit audit --scope system
 ./run.sh disk health
 ./run.sh clean
+./run.sh --self-test
 ```
 
 Use a listed short name or its repository-relative path. Remaining arguments
 are passed unchanged to that command. Ambiguous names, traversal, malformed
-help metadata, symlinks, unsupported platforms, and incompatible scripts are
+manual metadata, symlinks, unsupported platforms, and incompatible scripts are
 rejected.
 
 `./run.sh --self-test` validates all three operating-system catalogs without
 running their commands.
+
+## Remote manuals
+
+Fetch plain Markdown with `curl`, or pipe it to Glow for color:
+
+```sh
+curl -fsSL \
+  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man" |
+  glow -
+```
+
+## Exit status
+
+`list`, help, and the self-test return `0`; launcher validation errors return
+`2`; and a missing Python interpreter returns `127`. A launched command
+replaces the launcher, so its exit status passes through unchanged.

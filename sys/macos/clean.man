@@ -26,11 +26,13 @@
 # macOS cache cleaner
 
 Clears regenerable caches from applications, app containers, Xcode,
-Simulators, Homebrew, Quick Look, and current-user temporary storage.
+Simulators, Homebrew, Quick Look, and current-user temporary storage. It needs
+macOS and its system `zsh`. Temporary cleanup defaults to owned files older
+than three days; `--all-temp` includes all owned entries.
 
-In the TUI, the first run is always a preview. Nothing is deleted until that
-preview finishes successfully and you type `CLEAN`. Apply repeats discovery
-with the same settings, so targets may change between the two runs.
+> **Preview first:** In the TUI, nothing is deleted until the preview finishes
+> successfully and you type `CLEAN`. Apply repeats discovery with the same
+> settings, so targets may change between the two runs.
 
 ## What it can clean
 
@@ -65,3 +67,8 @@ sys/macos/clean --help
 sys/macos/clean --verbose
 sys/macos/clean --apply
 ```
+
+## Exit status
+
+`0` means the preview or cleanup completed without warnings. `1` means input,
+platform, privilege, path validation, or one or more cleanup operations failed.

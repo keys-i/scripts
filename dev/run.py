@@ -31,17 +31,17 @@ def host_os() -> str:
 
 def metadata(help_path: Path) -> dict[str, object]:
     if help_path.is_symlink() or help_path.stat().st_size > 1024 * 1024:
-        raise LauncherError(f"unsafe help page: {help_path}")
+        raise LauncherError(f"unsafe manual: {help_path}")
     text = help_path.read_text(encoding="utf-8")
     marker = text.find("\n---\n", 4)
     if not text.startswith("---\n") or marker < 0:
-        raise LauncherError(f"invalid help front matter: {help_path}")
+        raise LauncherError(f"invalid manual front matter: {help_path}")
     try:
         value = json.loads(text[4:marker])
     except json.JSONDecodeError as error:
-        raise LauncherError(f"invalid help JSON in {help_path}: {error}") from error
+        raise LauncherError(f"invalid manual JSON in {help_path}: {error}") from error
     if not isinstance(value, dict):
-        raise LauncherError(f"help metadata is not an object: {help_path}")
+        raise LauncherError(f"manual metadata is not an object: {help_path}")
     return value
 
 
