@@ -121,13 +121,13 @@ jobs:
       - name: Audit script dependencies
         shell: bash
         run: |
-          found=0
-          for script in dev/gui.py bin/agent bin/cleaner bin/disk bin/hardware bin/slurm; do
-            [[ -f "$script" ]] || continue
-            found=1
+          mapfile -t scripts < <(
+            git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' || true
+          )
+          for script in "${scripts[@]}"; do
             uv audit --script "$script"
           done
-          (( found )) || echo "No dependency-bearing Python scripts found"
+          (( ${#scripts[@]} )) || echo "No dependency-bearing Python scripts found"
 
   python-security:
     name: Python / security lint

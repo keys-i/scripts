@@ -143,13 +143,13 @@ jobs:
       - name: Test command tools
         shell: bash
         run: |
-          found=0
-          for script in bin/agent bin/cleaner bin/disk bin/hardware bin/slurm; do
-            [[ -f "$script" ]] || continue
-            found=1
+          mapfile -t scripts < <(
+            git grep -Il '^#!/usr/bin/env -S uv run --script' -- 'bin/*' || true
+          )
+          for script in "${scripts[@]}"; do
             uv run --script "$script" --self-test
           done
-          (( found )) || echo "No Python command tools found"
+          (( ${#scripts[@]} )) || echo "No Python command tools found"
 
   metadata:
     name: Repository files
