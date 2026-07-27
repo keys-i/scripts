@@ -3,9 +3,9 @@ name: Quality
 on:
   merge_group:
   pull_request:
-    branches: [main]
+    branches: [main, gui]
   push:
-    branches: [main]
+    branches: [main, actions, gui, py]
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
         id: detect
         shell: bash
         run: |
-          if [ -n "$(git ls-files -- '*.py')" ]; then
+          if git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' >/dev/null 2>&1; then
             echo 'matrix={"include":[{"language":"actions"},{"language":"python"}]}' >> "$GITHUB_OUTPUT"
           else
             echo 'matrix={"include":[{"language":"actions"}]}' >> "$GITHUB_OUTPUT"
@@ -101,7 +101,7 @@ jobs:
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
 
   python-audit:
-    name: Python audit
+    name: Python / dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -112,12 +112,48 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        if: hashFiles('dev/gui.py') != ''
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.32"
           python-version: "3.11"
 
-      - name: Audit dependencies
-        if: hashFiles('dev/gui.py') != ''
-        run: uv audit --script dev/gui.py
+      - name: Audit script dependencies
+        shell: bash
+        run: |
+          found=0
+          for script in dev/gui.py bin/agent bin/cleaner bin/disk bin/hardware bin/slurm; do
+            [[ -f "$script" ]] || continue
+            found=1
+            uv audit --script "$script"
+          done
+          (( found )) || echo "No dependency-bearing Python scripts found"
+
+  python-security:
+    name: Python / security lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          python-version: "3.11"
+
+      - name: Scan Python scripts
+        shell: bash
+        run: |
+          mapfile -t python_files < <(
+            git ls-files -- 'bin/_common.py'
+            git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' || true
+          )
+          if (( ${#python_files[@]} == 0 )); then
+            echo "No Python scripts found"
+            exit 0
+          fi
+          uvx bandit@1.9.4 --quiet --severity-level medium "${python_files[@]}"

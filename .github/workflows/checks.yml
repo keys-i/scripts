@@ -3,9 +3,9 @@ name: Checks
 on:
   merge_group:
   pull_request:
-    branches: [main]
+    branches: [main, gui]
   push:
-    branches: [main]
+    branches: [main, actions, gui, py]
   workflow_dispatch:
 
 permissions:
@@ -81,8 +81,40 @@ jobs:
         shell: pwsh
         run: ./sys/windows/clean.ps1 -SelfTest
 
+  python-style:
+    name: Python / style
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          python-version: "3.11"
+
+      - name: Find and check Python scripts
+        shell: bash
+        run: |
+          mapfile -t python_files < <(
+            git ls-files -- 'bin/_common.py'
+            git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' || true
+          )
+          if (( ${#python_files[@]} == 0 )); then
+            echo "No Python scripts found"
+            exit 0
+          fi
+          printf 'Checking %s\n' "${python_files[@]}"
+          uvx ruff@0.16.0 format --check --target-version=py311 "${python_files[@]}"
+          uvx ruff@0.16.0 check --output-format=github --target-version=py311 "${python_files[@]}"
+
   python:
-    name: Python / ${{ matrix.os }}
+    name: Python / runtime / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -97,23 +129,25 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        if: hashFiles('dev/gui.py') != ''
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.32"
           python-version: "3.11"
 
-      - name: Check formatting
-        if: hashFiles('dev/gui.py') != ''
-        run: uvx ruff@0.16.0 format --check --target-version=py311 dev/gui.py
-
-      - name: Lint
-        if: hashFiles('dev/gui.py') != ''
-        run: uvx ruff@0.16.0 check --output-format=github --target-version=py311 dev/gui.py
-
       - name: Test dashboard
         if: hashFiles('dev/gui.py') != ''
         run: uv run dev/gui.py --self-test
+
+      - name: Test command tools
+        shell: bash
+        run: |
+          found=0
+          for script in bin/agent bin/cleaner bin/disk bin/hardware bin/slurm; do
+            [[ -f "$script" ]] || continue
+            found=1
+            uv run --script "$script" --self-test
+          done
+          (( found )) || echo "No Python command tools found"
 
   metadata:
     name: Repository files
