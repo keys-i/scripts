@@ -27,6 +27,21 @@ keep it below the prompt. Add `--nerd-fonts` when your terminal uses a Nerd
 Font. Use `/` to filter, `F1` for help, `F2` to run, `F3` for files, and `F5`
 to sort; every control also works with a mouse.
 
+The guided Python tools share that interface and remain useful directly:
+
+```sh
+bin/agent doctor
+bin/disk health
+bin/cleaner git audit
+bin/hardware diagnose --area all
+bin/slurm plan --config slurm.toml
+```
+
+They use the Python standard library and native operating-system commands.
+Read each adjacent `.help` page in the dashboard, or pass `--help` directly.
+The [agent research](docs/agent-tools.md) records supported clients and cleanup
+limits; the [Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
+
 Cleanup scripts always run a preview first. Applying repeats discovery with the
 same settings and requires typing `CLEAN`, so targets can change if the
 filesystem changes between the two runs.

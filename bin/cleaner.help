@@ -1,0 +1,122 @@
+---
+{
+  "summary": "Audit, garbage-collect, clean dangling Git objects, and rewrite history safely.",
+  "platform": "any",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "parameters": [
+    {
+      "name": "tool",
+      "label": "Cleaner",
+      "required": true,
+      "default": "git",
+      "choices": [
+        {"value": "git", "label": "Git repository"}
+      ]
+    },
+    {
+      "name": "operation",
+      "label": "Operation",
+      "flag": "--operation",
+      "required": true,
+      "default": "audit",
+      "choices": [
+        {"value": "audit", "label": "Audit object storage and unreachable objects"},
+        {"value": "gc", "label": "Garbage collect with a safe retention window"},
+        {"value": "dangling", "label": "Expire reflogs and remove old dangling objects"},
+        {"value": "rewrite", "label": "Rewrite history with git-filter-repo"}
+      ]
+    },
+    {
+      "name": "repo",
+      "label": "Repository",
+      "flag": "--repo",
+      "placeholder": "defaults to the working directory"
+    },
+    {
+      "name": "expire",
+      "label": "Unreachable-object retention",
+      "flag": "--expire",
+      "required": true,
+      "default": "30.days.ago",
+      "placeholder": "30.days.ago"
+    },
+    {
+      "name": "path",
+      "label": "History path",
+      "flag": "--path",
+      "placeholder": "file or directory to remove from every commit"
+    },
+    {
+      "name": "replace-text",
+      "label": "Replacement expressions file",
+      "flag": "--replace-text",
+      "placeholder": "git-filter-repo replace-text file"
+    },
+    {
+      "name": "backup",
+      "label": "Pre-rewrite bundle",
+      "flag": "--backup",
+      "placeholder": "defaults inside .git"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--keep-path",
+      "label": "Keep only the history path instead of removing it"
+    },
+    {
+      "flag": "--force",
+      "label": "Allow a dirty rewrite or immediate expiry",
+      "warning": "Force bypasses git-filter-repo's fresh-clone guard. Inspect the backup bundle first."
+    }
+  ]
+}
+---
+
+# Git repository cleaner
+
+`cleaner git` replaces error-prone `filter-branch` recipes with
+`git-filter-repo`, keeps normal garbage collection conservative, and exposes
+unreachable objects before removing them.
+
+The `tool` is `git`; choose an `--operation`, optionally point `--repo` at
+another work tree, and use `--backup` to override the rewrite bundle path.
+
+## Operations
+
+### `audit`
+
+Runs `git count-objects -vH` and a full `git fsck --unreachable --no-reflogs`.
+It prints object metadata only, not object contents.
+
+### `gc`
+
+Expires unreachable reflog entries and runs `git gc`. The default
+`--expire 30.days.ago` retains recent recovery points; use another Git
+approximate date when needed.
+
+### `dangling`
+
+Shows every unreachable object and a dry-run reflog expiry before applying.
+`--expire now` is rejected unless `--force` is also selected.
+
+### `rewrite`
+
+Requires `git-filter-repo` and either `--path` or `--replace-text`. A
+`--path` is removed from every commit by default; select `--keep-path` to keep
+only that path. Before rewriting, the command creates a bundle containing every
+ref. Rewrites change commit IDs and can remove the `origin` remote.
+
+## Direct CLI
+
+```sh
+cleaner git audit
+cleaner git gc --expire 90.days.ago
+cleaner git dangling --expire 30.days.ago
+cleaner git rewrite --path path/to/secret.env
+cleaner git rewrite --replace-text replacements.txt
+```
+
+Nothing mutates without `--apply`. Direct applies require typing `APPLY`; the
+shared TUI confirms with `CLEAN` and then supplies `--apply --yes`.

@@ -1,0 +1,132 @@
+---
+{
+  "summary": "Plan, render, and submit many Slurm jobs from one validated TOML matrix.",
+  "platform": "linux",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "plan",
+      "choices": [
+        {"value": "plan", "label": "Plan — expand and inspect every job"},
+        {"value": "render", "label": "Render — create inspectable sbatch files"},
+        {"value": "submit", "label": "Submit — render and send every job to Slurm"}
+      ]
+    },
+    {
+      "name": "config",
+      "label": "TOML configuration",
+      "flag": "--config",
+      "required": true,
+      "default": "slurm.toml",
+      "placeholder": "docs/examples/slurm.toml"
+    },
+    {
+      "name": "output",
+      "label": "Rendered script directory",
+      "flag": "--output",
+      "required": true,
+      "default": "slurm-build",
+      "placeholder": "slurm-build"
+    },
+    {
+      "name": "limit",
+      "label": "Maximum expanded jobs",
+      "flag": "--limit",
+      "required": true,
+      "default": "1000",
+      "placeholder": "1000"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--json",
+      "label": "Emit the plan as JSON"
+    }
+  ]
+}
+---
+
+# Slurm matrix builder
+
+One TOML file expands into multiple jobs, config files, branches, and
+hyperparameter combinations. `plan` and `render` work without Slurm; only
+`submit` needs `sbatch`. Choose the `action` in the dashboard or as the first
+positional argument.
+
+The generated scripts keep the useful safety checks from the former Bunya
+submission script: account and GPU defaults, clean Conda activation, scratch
+caches, GPU checks, one-time locked preparation, and a branch guard. Jobs
+verify the requested branch but never run `git checkout`, so parallel
+submissions cannot race over one worktree.
+
+## TOML layout
+
+```toml
+[cluster]
+account = "a_research"
+partition = "gpu_cuda"
+qos = "gpu"
+gres = "gpu:a100:1"
+constraint = "cuda80gb"
+cpus_per_task = 4
+mem = "32G"
+time = "08:00:00"
+
+[environment]
+modules = ["miniforge/26.1.0-0"]
+conda_env = "/scratch/user/alice/conda/envs/flowIDS"
+scratch_base = "/scratch/user/{user}"
+check_gpu = true
+launcher = ["srun", "--ntasks=1"]
+
+[environment.variables]
+TOKENIZERS_PARALLELISM = "false"
+
+[[jobs]]
+name = "flowids"
+branch = "m0"
+workdir = "../flowIDS"
+configs = ["configs/*.toml"]
+prepare = ["python", "scripts/get_dataset.py"]
+prepare_once = true
+command = [
+  "python", "-m", "src.main",
+  "--config", "{config}",
+  "--seed", "{seed}",
+  "--learning-rate", "{learning_rate}"
+]
+
+[jobs.matrix]
+seed = [1, 2, 3]
+learning_rate = [0.001, 0.0001]
+```
+
+Each config is combined with every matrix value. Placeholders supported in
+`command` and `prepare` are `{config}`, `{branch}`, `{workdir}`, and every
+matrix key. Add more `[[jobs]]` tables for unrelated commands or branches.
+The default `--limit 1000` catches accidental explosions before submission.
+With `prepare_once = true`, a lock and success marker derived from the prepare
+command let only the first job prepare shared input. Remove the matching
+`.slurm-prepare-*.done` marker from the work directory to prepare it again.
+
+If `[cluster].account` is omitted, an `a_*` Unix group is used. Bunya defaults
+select `gpu_cuda`, one A100, `gpu`, and `cuda80gb`; explicitly set cluster
+values for other sites or CPU jobs. `environment.conda_env` must be absolute.
+
+## Direct CLI
+
+```sh
+slurm plan --config docs/examples/slurm.toml
+slurm plan --config slurm.toml --json
+slurm render --config slurm.toml --output slurm-build
+slurm render --config slurm.toml --output slurm-build --apply
+slurm submit --config slurm.toml --apply
+```
+
+`render` and `submit` preview the exact files first. Direct applies require
+typing `APPLY`; the shared TUI confirms with `CLEAN` and then supplies
+`--apply --yes`.

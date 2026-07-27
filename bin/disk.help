@@ -1,0 +1,102 @@
+---
+{
+  "summary": "Inspect, health-check, recover, and repair disks on all three desktop operating systems.",
+  "platform": "any",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "show",
+      "choices": [
+        {"value": "show", "label": "Show disks, partitions, volumes, and free space"},
+        {"value": "health", "label": "Health — SMART and native reliability data"},
+        {"value": "recover", "label": "Recover — read-only mount, TestDisk, or PhotoRec"},
+        {"value": "fix", "label": "Fix — verify first, then repair"}
+      ]
+    },
+    {
+      "name": "target",
+      "label": "Disk or volume target",
+      "flag": "--target",
+      "placeholder": "/dev/sda, disk2s1, or C"
+    },
+    {
+      "name": "tool",
+      "label": "Recovery method",
+      "flag": "--tool",
+      "required": true,
+      "default": "mount",
+      "choices": [
+        {"value": "mount", "label": "Mount read-only with the operating system"},
+        {"value": "testdisk", "label": "TestDisk partition/filesystem recovery"},
+        {"value": "photorec", "label": "PhotoRec signature-based file recovery"}
+      ],
+      "warning": "TestDisk and PhotoRec require their own interactive terminal; use the direct CLI for those methods."
+    },
+    {
+      "name": "destination",
+      "label": "PhotoRec output directory",
+      "flag": "--destination",
+      "placeholder": "a directory on another physical disk"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--json",
+      "label": "Emit machine-readable inventory where supported"
+    }
+  ]
+}
+---
+
+# Cross-platform disk manager
+
+Uses `lsblk`, `findmnt`, `fsck`, `smartctl`, `nvme`, and `udisksctl` on Linux;
+`diskutil` and optional `smartctl` on macOS; and PowerShell Storage cmdlets on
+Windows. It does not implement a filesystem, SMART parser, or recovery engine.
+
+## Actions
+
+### `show`
+
+Lists physical disks, partitions, filesystems, labels, identifiers, mount
+points, capacity, and read-only/removable state. Select `--json` for native
+structured output.
+
+### `health`
+
+Shows OS reliability status and SMART data when `smartctl` is installed. Pass a
+specific `--target` for full device attributes. SMART warnings are evidence to
+back up and replace a disk, not something software can repair.
+
+### `recover`
+
+The default `--tool mount` attempts a read-only mount. `--tool testdisk` opens
+partition recovery. `--tool photorec` carves files and requires a
+`--destination` on another physical disk. Stop writing to a damaged source
+before recovery.
+
+### `fix`
+
+Runs a read-only verification first. Linux repairs require an unmounted block
+device. macOS uses `diskutil verify/repair`. Windows uses `Repair-Volume -Scan`
+then `-SpotFix`. Back up irreplaceable data before applying.
+
+## Direct CLI
+
+```sh
+disk show
+disk show --json
+disk health --target /dev/nvme0
+disk recover /dev/sdb1 --tool mount
+disk recover /dev/sdb --tool photorec --destination /mnt/recovery
+disk fix /dev/sdb1
+disk fix /dev/sdb1 --apply
+```
+
+Without `--apply`, recovery and repair print or run only read-only checks.
+Direct applies require typing `APPLY`; the shared TUI confirms with `CLEAN` and
+then supplies `--apply --yes`.

@@ -1,0 +1,327 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Cross-platform hardware diagnostics and conservative repair frontends."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+from _common import (
+    Step,
+    ToolError,
+    apply_steps,
+    elevated,
+    find_program,
+    heading,
+    host_os,
+    require_program,
+    run,
+    warning,
+)
+
+AREAS = ("all", "cpu", "memory", "display", "storage", "network", "battery")
+
+
+def _run_if_present(label: str, *command: str) -> None:
+    program = find_program(command[0])
+    if not program:
+        return
+    heading(label)
+    run((program, *command[1:]), check=False)
+
+
+def _disk_command(*arguments: str) -> tuple[str, ...]:
+    return (sys.executable, str(Path(__file__).with_name("disk")), *arguments)
+
+
+def diagnose_linux(area: str) -> None:
+    if area in {"all", "cpu"}:
+        _run_if_present("Kernel and architecture", "uname", "-a")
+        _run_if_present("CPU topology and flags", "lscpu")
+    if area in {"all", "memory"}:
+        _run_if_present("Memory and swap", "free", "-h")
+        _run_if_present(
+            "Kernel memory warnings",
+            "journalctl",
+            "-k",
+            "-b",
+            "-p",
+            "warning..alert",
+            "--no-pager",
+            "-n",
+            "100",
+        )
+    if area in {"all", "display"}:
+        _run_if_present(
+            "Display-manager service",
+            "systemctl",
+            "--no-pager",
+            "--full",
+            "status",
+            "display-manager",
+        )
+        _run_if_present(
+            "Display-manager journal",
+            "journalctl",
+            "-b",
+            "-u",
+            "display-manager",
+            "--no-pager",
+            "-n",
+            "100",
+        )
+        _run_if_present("Display adapters and drivers", "lspci", "-nnk")
+        _run_if_present("Ubuntu recommended drivers", "ubuntu-drivers", "devices")
+    if area in {"all", "storage"}:
+        run(_disk_command("health"), check=False)
+    if area in {"all", "network"}:
+        _run_if_present("Network interfaces", "ip", "-brief", "address")
+        _run_if_present("NetworkManager state", "nmcli", "general", "status")
+    if area in {"all", "battery"}:
+        _run_if_present("Battery state", "upower", "-d")
+        _run_if_present("ACPI state", "acpi", "-V")
+
+
+def diagnose_macos(area: str) -> None:
+    data_types = {
+        "cpu": ("SPHardwareDataType",),
+        "memory": ("SPMemoryDataType",),
+        "display": ("SPDisplaysDataType",),
+        "network": ("SPNetworkDataType",),
+        "battery": ("SPPowerDataType",),
+        "all": (
+            "SPHardwareDataType",
+            "SPMemoryDataType",
+            "SPDisplaysDataType",
+            "SPNetworkDataType",
+            "SPPowerDataType",
+        ),
+    }
+    if area in data_types:
+        heading("Apple hardware report")
+        run(
+            (
+                require_program("system_profiler"),
+                *data_types[area],
+                "-detailLevel",
+                "mini",
+            ),
+            check=False,
+        )
+    if area in {"all", "storage"}:
+        run(_disk_command("health"), check=False)
+    if area in {"all", "battery"}:
+        _run_if_present("Power-management state", "pmset", "-g", "batt")
+
+
+def diagnose_windows(area: str) -> None:
+    powershell = require_program("pwsh", "powershell")
+    queries = {
+        "cpu": "Get-CimInstance Win32_Processor|Format-List Name,Status,LoadPercentage,NumberOfCores,MaxClockSpeed",
+        "memory": "Get-CimInstance Win32_PhysicalMemory|Format-Table Manufacturer,PartNumber,Capacity,Speed,Status -AutoSize",
+        "display": "Get-CimInstance Win32_VideoController|Format-List Name,Status,DriverVersion,AdapterRAM,VideoModeDescription",
+        "network": "Get-NetAdapter|Format-Table Name,InterfaceDescription,Status,LinkSpeed,MacAddress -AutoSize",
+        "battery": "Get-CimInstance Win32_Battery|Format-List Name,Status,EstimatedChargeRemaining,BatteryStatus",
+        "all": (
+            "Get-CimInstance Win32_ComputerSystem|Format-List Manufacturer,Model,TotalPhysicalMemory;"
+            "Get-PnpDevice -PresentOnly|Where-Object Status -ne 'OK'|"
+            "Format-Table Class,FriendlyName,Status,Problem -AutoSize"
+        ),
+    }
+    if area in queries:
+        heading("Windows hardware report")
+        run(
+            (
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                queries[area],
+            ),
+            check=False,
+        )
+    if area in {"all", "storage"}:
+        run(_disk_command("health"), check=False)
+
+
+def diagnose(area: str, platform: str) -> int:
+    heading(f"Hardware diagnosis · {area}")
+    if platform == "linux":
+        diagnose_linux(area)
+    elif platform == "macos":
+        diagnose_macos(area)
+    elif platform == "windows":
+        diagnose_windows(area)
+    else:
+        raise ToolError(f"unsupported operating system: {platform}")
+    return 0
+
+
+def repair_steps(
+    platform: str,
+    area: str,
+    display_action: str,
+    target: str | None,
+) -> list[Step]:
+    if area == "display":
+        if platform != "linux":
+            raise ToolError("automatic display repair is intentionally Linux-only")
+        if display_action == "restart":
+            systemctl = require_program("systemctl")
+            return [
+                Step(
+                    "Clear display-manager failure state",
+                    elevated((systemctl, "reset-failed", "display-manager")),
+                ),
+                Step(
+                    "Restart the active display manager",
+                    elevated((systemctl, "restart", "display-manager")),
+                ),
+            ]
+        if display_action == "drivers":
+            return [
+                Step(
+                    "Install Ubuntu's recommended signed drivers",
+                    elevated((require_program("ubuntu-drivers"), "install")),
+                )
+            ]
+        if os.environ.get("SCRIPTS_TUI"):
+            raise ToolError("dpkg-reconfigure needs a direct interactive terminal")
+        return [
+            Step(
+                "Reconfigure GDM3 without replacing it",
+                elevated((require_program("dpkg-reconfigure"), "gdm3")),
+            )
+        ]
+    if area == "network":
+        if platform == "linux":
+            if program := find_program("resolvectl"):
+                return [Step("Flush the DNS cache", (program, "flush-caches"))]
+            return [
+                Step(
+                    "Flush the DNS cache",
+                    (require_program("systemd-resolve"), "--flush-caches"),
+                )
+            ]
+        if platform == "macos":
+            return [
+                Step(
+                    "Flush the directory-service DNS cache",
+                    elevated((require_program("dscacheutil"), "-flushcache")),
+                ),
+                Step(
+                    "Reload the multicast DNS responder",
+                    elevated((require_program("killall"), "-HUP", "mDNSResponder")),
+                ),
+            ]
+        if platform == "windows":
+            return [
+                Step(
+                    "Flush the DNS client cache",
+                    (
+                        require_program("pwsh", "powershell"),
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Clear-DnsClientCache",
+                    ),
+                )
+            ]
+    if area == "storage":
+        command = [*_disk_command("fix")]
+        if target:
+            command.extend(("--target", target))
+        command.extend(("--apply", "--yes"))
+        return [Step("Verify and repair through the disk manager", tuple(command))]
+    raise ToolError(
+        f"{area} has no safe generic software fix; use the diagnosis to repair "
+        "the specific component"
+    )
+
+
+def fix(args: argparse.Namespace, platform: str) -> int:
+    if args.area == "all":
+        raise ToolError("choose one repair area instead of --area all")
+    diagnose(args.area, platform)
+    steps = repair_steps(platform, args.area, args.display_action, args.target)
+    heading("Repair plan")
+    if args.area == "display":
+        warning("Restarting a display manager ends graphical login sessions.")
+    if (
+        apply_steps(
+            steps,
+            apply=args.apply,
+            yes=args.yes,
+            prompt=f"repair {args.area} on this {platform} host",
+        )
+        and args.area == "display"
+        and args.display_action == "drivers"
+    ):
+        print("Driver changes may require a manual reboot after saving your work.")
+    return 0
+
+
+def self_test() -> int:
+    assert set(AREAS) == {
+        "all",
+        "cpu",
+        "memory",
+        "display",
+        "storage",
+        "network",
+        "battery",
+    }
+    assert _disk_command("health")[-1] == "health"
+    print("ok: hardware diagnosis areas and delegated disk repair contract")
+    return 0
+
+
+def parse_args(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="hardware",
+        description="Diagnose hardware and apply conservative native repairs.",
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("diagnose", "fix"),
+        default="diagnose",
+    )
+    parser.add_argument("--area", choices=AREAS, default="all")
+    parser.add_argument(
+        "--display-action",
+        choices=("restart", "drivers", "reconfigure"),
+        default="restart",
+    )
+    parser.add_argument(
+        "--target", help="storage device or volume for delegated repair"
+    )
+    parser.add_argument("--apply", action="store_true", help="perform the repair plan")
+    parser.add_argument("--yes", action="store_true", help="skip the APPLY prompt")
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if arguments is None else arguments)
+    if args.self_test:
+        return self_test()
+    try:
+        return (
+            diagnose(args.area, host_os())
+            if args.command == "diagnose"
+            else fix(args, host_os())
+        )
+    except (ToolError, OSError) as error:
+        print(f"hardware: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
