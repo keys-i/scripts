@@ -508,6 +508,12 @@ def display_command(command: Iterable[str]) -> str:
     return shlex.join(command)
 
 
+def markdown_code_block(text: str) -> str:
+    longest_run = max((len(match[0]) for match in re.finditer(r"`+", text)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return f"{fence}text\n{text}\n{fence}"
+
+
 def read_file_preview(path: Path, root: Path) -> str:
     """Read a bounded regular file without following a final symlink."""
     if path.is_symlink():
@@ -915,8 +921,8 @@ class RunWizard(ModalScreen[RunSelection | None]):
             )
             self.query_one("#review", Markdown).update(
                 f"# Review\n\n{flow}\n\n"
-                f"**Working directory:** `{directory}`\n\n"
-                f"```text\n{preview}\n```\n\n"
+                f"**Working directory:**\n\n{markdown_code_block(str(directory))}\n\n"
+                f"**Command:**\n\n{markdown_code_block(preview)}\n\n"
                 + (f"## Warnings\n\n{caution}\n" if caution else "")
             )
             self.step += 1
@@ -1792,10 +1798,35 @@ class ScriptsApp(App[None]):
             await process.wait()
 
 
+def _is_command(path: Path) -> bool:
+    if path.is_symlink() or not path.is_file() or path.name.endswith(HELP_SUFFIX):
+        return False
+    if path.suffix.lower() in {".bat", ".cmd", ".ps1"}:
+        return True
+    with path.open("rb") as script:
+        return script.read(2) == b"#!"
+
+
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     expected = {"linux", "macos", "windows"}
     if not expected.issubset({script.platform for script in scripts}):
         raise GuiError("self-test needs Linux, macOS, and Windows help pages")
+    documented = {script.path for script in scripts}
+    commands = {
+        path.resolve()
+        for directory in SEARCH_DIRS
+        if (root / directory).is_dir()
+        for path in (root / directory).rglob("*")
+        if _is_command(path)
+    }
+    missing = sorted(path.relative_to(root) for path in commands - documented)
+    if missing:
+        names = ", ".join(path.as_posix() for path in missing)
+        raise GuiError(f"commands missing adjacent {HELP_SUFFIX} pages: {names}")
+    hostile_preview = "path/```\n# forged review"
+    fenced_preview = markdown_code_block(hostile_preview)
+    assert fenced_preview.splitlines()[0] == "````text"
+    assert fenced_preview.splitlines()[-1] == "````"
 
     with tempfile.TemporaryDirectory(prefix="scripts-gui-contract-") as directory:
         contract_root = Path(directory).resolve()

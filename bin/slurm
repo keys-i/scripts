@@ -16,12 +16,12 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-import tomllib
 from _common import ToolError, confirmed, heading, require_program
 
 DEFAULT_CLUSTER: dict[str, Any] = {

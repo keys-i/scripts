@@ -1,0 +1,153 @@
+---
+{
+  "summary": "Audit host and project security, correlate findings with CVEs and CISA KEV, and diagnose scanner readiness.",
+  "platform": "any",
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "audit",
+      "choices": [
+        {"value": "audit", "label": "Audit — collect and prioritize security findings"},
+        {"value": "doctor", "label": "Doctor — check scanners, catalog, target, and platform support"}
+      ]
+    },
+    {
+      "name": "scope",
+      "label": "Scope",
+      "flag": "--scope",
+      "required": true,
+      "default": "all",
+      "choices": [
+        {"value": "all", "label": "Host configuration and project files"},
+        {"value": "system", "label": "Native operating-system security checks"},
+        {"value": "project", "label": "Dependencies, configuration, and secrets"}
+      ]
+    },
+    {
+      "name": "target",
+      "label": "Target",
+      "flag": "--target",
+      "required": true,
+      "default": ".",
+      "placeholder": "project directory or host path"
+    },
+    {
+      "name": "scanner",
+      "label": "Project scanner",
+      "flag": "--scanner",
+      "required": true,
+      "default": "auto",
+      "choices": [
+        {"value": "auto", "label": "All installed supported scanners"},
+        {"value": "osv", "label": "OSV-Scanner v2 dependency matching"},
+        {"value": "trivy", "label": "Trivy filesystem vulnerabilities and misconfiguration"},
+        {"value": "gitleaks", "label": "Gitleaks repository and file secret detection"}
+      ]
+    },
+    {
+      "name": "kev-catalog",
+      "label": "CISA KEV catalog",
+      "flag": "--kev-catalog",
+      "placeholder": "path to known_exploited_vulnerabilities.json"
+    },
+    {
+      "name": "fail-on",
+      "label": "Failure threshold",
+      "flag": "--fail-on",
+      "required": true,
+      "default": "high",
+      "choices": [
+        {"value": "none", "label": "Report findings without a severity failure"},
+        {"value": "low", "label": "Fail on Low or higher"},
+        {"value": "medium", "label": "Fail on Medium or higher"},
+        {"value": "high", "label": "Fail on High or Critical"},
+        {"value": "critical", "label": "Fail only on Critical"}
+      ],
+      "warning": "A threshold is an automation policy, not a risk decision; KEV and local exposure still require priority."
+    },
+    {
+      "name": "timeout",
+      "label": "Per-check timeout in seconds",
+      "flag": "--timeout",
+      "required": true,
+      "default": "300",
+      "placeholder": "positive whole number"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--refresh-kev",
+      "label": "Download the current CISA KEV JSON catalog"
+    },
+    {
+      "flag": "--json",
+      "label": "Emit one machine-readable report"
+    },
+    {
+      "flag": "--force",
+      "label": "Allow a guarded filesystem-root or home-directory target",
+      "warning": "Broad scans can cross trust boundaries, expose filenames to local scanner processes, and take a long time."
+    }
+  ]
+}
+---
+
+# Cross-platform security audit
+
+Runs read-only host checks and delegates project analysis to established
+scanners. Results are normalized, grouped by severity, and matched to CISA's
+Known Exploited Vulnerabilities catalog when a finding contains a CVE ID.
+
+The command does not claim that a machine is secure or compliant. `audit` and
+`doctor` never apply host-hardening changes. They show evidence and recommend
+remediation for a person to review. `--refresh-kev` only refreshes the local
+catalog cache.
+
+## Actions
+
+### `audit`
+
+With `--scope system`, inspect native update, malware-protection, disk
+encryption, firewall, application-trust, secure-boot, and mandatory-access
+control status where the host exposes them.
+
+With `--scope project`, `--scanner auto` runs each installed supported scanner:
+OSV-Scanner v2 for dependency vulnerabilities, Trivy for filesystem
+vulnerabilities and misconfiguration, and Gitleaks for exposed secrets.
+`--scope all` combines both views.
+
+The selected `--fail-on` level controls only the process exit status. A
+lower-severity item may still be urgent when it is internet-facing or in KEV,
+and a high CVSS score may be irrelevant when the vulnerable component is not
+present or reachable.
+
+`--timeout` limits each native probe or scanner run; a timeout is reported as
+incomplete coverage, never as a pass.
+
+### `doctor`
+
+Checks target safety, scanner executables and versions, native-platform
+support, and KEV catalog readability without performing a full scan. Missing
+optional scanners are reported with install guidance.
+
+## Direct CLI
+
+```sh
+security-audit audit --scope all --target .
+security-audit audit --scope project --target . --scanner auto
+security-audit audit --scope project --target . --scanner osv --fail-on high
+security-audit audit --scope system --refresh-kev
+security-audit audit --scope project --scanner gitleaks --target . --json
+security-audit doctor --scope all --target . --kev-catalog ./kev.json
+```
+
+Filesystem-root and home-directory targets are refused by default because they
+are slow and can cross unrelated trust boundaries. Use `--force` only after
+reviewing the target. Scanner processes receive the selected local path;
+review each scanner's privacy and data-source behavior before using it on
+sensitive code.
+
+See `docs/security-research.md` for the identifier model, official sources,
+platform coverage, prioritization method, and known blind spots.

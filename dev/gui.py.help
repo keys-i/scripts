@@ -1,0 +1,57 @@
+---
+{
+  "summary": "Browse, configure, and run every documented script in a responsive terminal dashboard.",
+  "platform": "any",
+  "parameters": [
+    {
+      "name": "root",
+      "label": "Local scripts checkout",
+      "flag": "--root",
+      "placeholder": "/path/to/scripts"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--inline",
+      "label": "Run below the prompt",
+      "warning": "Inline mode is available on macOS and Linux; Windows uses full-screen mode."
+    },
+    {
+      "flag": "--nerd-fonts",
+      "label": "Use Nerd Font file and folder icons"
+    },
+    {
+      "flag": "--self-test",
+      "label": "Validate help contracts and responsive layouts"
+    }
+  ]
+}
+---
+
+# Responsive scripts dashboard
+
+Discovers adjacent `.help` pages under `bin`, `dev`, and `sys`, then renders
+their Markdown, typed parameters, warnings, progress, files, and command output
+in one keyboard- and mouse-friendly interface.
+
+Without `--root`, the dashboard uses a local checkout when one can be found;
+otherwise it downloads a temporary copy of the repository and removes it when
+the dashboard closes.
+
+## Options
+
+| Option | Meaning |
+| --- | --- |
+| `--root PATH` | use one local scripts checkout |
+| `--inline` | run below the prompt on macOS or Linux |
+| `--nerd-fonts` | use Nerd Font file and folder icons |
+| `--self-test` | validate every help contract and compact/wide layouts |
+
+## Direct CLI
+
+```sh
+uv run dev/gui.py
+uv run dev/gui.py --root .
+uv run dev/gui.py --inline --nerd-fonts
+uv run dev/gui.py --root . --self-test
+```
