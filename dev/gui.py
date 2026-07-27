@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Iterable, Iterator
@@ -393,7 +394,14 @@ def _download_repository(destination: Path) -> Path:
         headers={"User-Agent": "keys-i-scripts-gui"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        # ARCHIVE_URL is constant; redirects are constrained before any body is read.
+        with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
+            final_url = urllib.parse.urlparse(response.geturl())
+            if final_url.scheme != "https" or final_url.hostname not in {
+                "github.com",
+                "codeload.github.com",
+            }:
+                raise GuiError("repository archive redirected to an unsafe URL")
             declared = response.headers.get("Content-Length")
             if declared is not None and int(declared) > ARCHIVE_LIMIT:
                 raise GuiError("repository archive is unexpectedly large")
