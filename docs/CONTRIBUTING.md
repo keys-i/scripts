@@ -73,6 +73,9 @@ Only clean, understandable, and tested scripts are accepted.
   Start it with JSON front matter describing its platform and options, then
   write concise Markdown help. Destructive scripts must declare matching
   `applyFlag` and `yesFlag` values.
+- Use `parameters` for guided positional arguments or valued flags. Each
+  parameter needs a `name` and `label`; add `choices`, `default`, `required`,
+  `placeholder`, or `flag` only when the command needs them.
 - Test the changed paths on every operating system or environment claimed by
   the script.
 - Add the smallest repeatable test or self-check that would catch the bug
