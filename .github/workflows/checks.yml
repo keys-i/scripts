@@ -97,6 +97,7 @@ jobs:
         with:
           version: "0.11.32"
           python-version: "3.11"
+          enable-cache: false
 
       - name: Find and check Python scripts
         shell: bash
@@ -133,6 +134,7 @@ jobs:
         with:
           version: "0.11.32"
           python-version: "3.11"
+          enable-cache: false
 
       - name: Test dashboard
         if: hashFiles('dev/gui.py') != ''
