@@ -35,14 +35,11 @@
       "name": "display-action",
       "label": "Linux display repair",
       "flag": "--display-action",
-      "required": true,
-      "default": "restart",
       "choices": [
         {"value": "restart", "label": "Reset and restart the active display manager"},
         {"value": "drivers", "label": "Install Ubuntu's recommended signed drivers"},
         {"value": "reconfigure", "label": "Reconfigure GDM3 in a direct terminal"}
-      ],
-      "warning": "Restarting the display manager ends graphical sessions. Reconfigure needs a direct terminal."
+      ]
     },
     {
       "name": "target",
@@ -83,9 +80,20 @@ There is no generic safe software repair for failed processors, memory,
 batteries, or other physical parts. Diagnosis provides evidence for vendor
 tests or replacement.
 
-The historical `gdm3-error-fix` behavior was replaced with this guarded Linux
-display workflow. It does not install LightDM, change the selected display
-manager, or force a reboot.
+As of 2026-07-27, the referenced
+[`keys-i/gdm3-error-fix`](https://github.com/keys-i/gdm3-error-fix) repository
+returns 404 through Git and the GitHub API. Its
+[archived GPL-3.0 script](https://archive.softwareheritage.org/api/1/origin/https://github.com/keys-i/gdm3-error-fix/get/)
+was reviewed but not copied: it installed a parsed driver and LightDM,
+reconfigured LightDM, slept, and forced a reboot. The guarded workflow above
+covers its useful diagnosis and signed-driver goal without brittle output
+parsing, changing the selected display manager, arbitrary delays, or a forced
+reboot.
+
+Dashboard previews work for every repair. GDM3 reconfiguration and any repair
+that needs an interactive administrator password must be applied from the
+displayed direct command; dashboard elevation works only when sudo/doas policy
+already permits a non-interactive command.
 
 ## Direct CLI
 

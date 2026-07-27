@@ -21,6 +21,7 @@ class ToolError(Exception):
 class Step:
     label: str
     command: tuple[str, ...]
+    ok_codes: tuple[int, ...] = (0,)
 
 
 def host_os() -> str:
@@ -68,6 +69,7 @@ def run(
     cwd: Path | None = None,
     capture: bool = False,
     check: bool = True,
+    ok_codes: Sequence[int] = (0,),
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     print(color(f"$ {command_text(command)}", "2"), flush=True)
@@ -85,7 +87,7 @@ def run(
         raise ToolError(
             f"{Path(command[0]).name} timed out after {timeout} seconds"
         ) from error
-    if check and result.returncode:
+    if check and result.returncode not in ok_codes:
         detail = (result.stderr or result.stdout or "").strip()
         raise ToolError(
             f"{Path(command[0]).name} exited {result.returncode}"
@@ -97,7 +99,9 @@ def run(
 def elevated(command: Sequence[str]) -> tuple[str, ...]:
     if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0:
         return tuple(command)
-    return (require_program("sudo", "doas"), *command)
+    program = require_program("sudo", "doas")
+    non_interactive = ("-n",) if os.environ.get("SCRIPTS_TUI") else ()
+    return (program, *non_interactive, *command)
 
 
 def show_steps(steps: Sequence[Step]) -> None:
@@ -136,7 +140,7 @@ def apply_steps(
         return False
     for step in steps:
         heading(step.label)
-        run(step.command, cwd=cwd)
+        run(step.command, cwd=cwd, ok_codes=step.ok_codes)
     return True
 
 

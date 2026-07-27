@@ -119,21 +119,27 @@ def diagnose_macos(area: str) -> None:
         _run_if_present("Power-management state", "pmset", "-g", "batt")
 
 
-def diagnose_windows(area: str) -> None:
-    powershell = require_program("pwsh", "powershell")
+def _windows_query(area: str) -> str | None:
     queries = {
         "cpu": "Get-CimInstance Win32_Processor|Format-List Name,Status,LoadPercentage,NumberOfCores,MaxClockSpeed",
         "memory": "Get-CimInstance Win32_PhysicalMemory|Format-Table Manufacturer,PartNumber,Capacity,Speed,Status -AutoSize",
         "display": "Get-CimInstance Win32_VideoController|Format-List Name,Status,DriverVersion,AdapterRAM,VideoModeDescription",
         "network": "Get-NetAdapter|Format-Table Name,InterfaceDescription,Status,LinkSpeed,MacAddress -AutoSize",
         "battery": "Get-CimInstance Win32_Battery|Format-List Name,Status,EstimatedChargeRemaining,BatteryStatus",
-        "all": (
-            "Get-CimInstance Win32_ComputerSystem|Format-List Manufacturer,Model,TotalPhysicalMemory;"
-            "Get-PnpDevice -PresentOnly|Where-Object Status -ne 'OK'|"
-            "Format-Table Class,FriendlyName,Status,Problem -AutoSize"
-        ),
     }
-    if area in queries:
+    if area == "all":
+        return (
+            "Get-CimInstance Win32_ComputerSystem|Format-List Manufacturer,Model,TotalPhysicalMemory;"
+            + ";".join(queries.values())
+            + ";Get-PnpDevice -PresentOnly|Where-Object Status -ne 'OK'|"
+            "Format-Table Class,FriendlyName,Status,Problem -AutoSize"
+        )
+    return queries.get(area)
+
+
+def diagnose_windows(area: str) -> None:
+    powershell = require_program("pwsh", "powershell")
+    if query := _windows_query(area):
         heading("Windows hardware report")
         run(
             (
@@ -142,7 +148,7 @@ def diagnose_windows(area: str) -> None:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                queries[area],
+                query,
             ),
             check=False,
         )
@@ -191,8 +197,6 @@ def repair_steps(
                     elevated((require_program("ubuntu-drivers"), "install")),
                 )
             ]
-        if os.environ.get("SCRIPTS_TUI"):
-            raise ToolError("dpkg-reconfigure needs a direct interactive terminal")
         return [
             Step(
                 "Reconfigure GDM3 without replacing it",
@@ -249,6 +253,13 @@ def fix(args: argparse.Namespace, platform: str) -> int:
     if args.area == "all":
         raise ToolError("choose one repair area instead of --area all")
     diagnose(args.area, platform)
+    if (
+        args.apply
+        and os.environ.get("SCRIPTS_TUI")
+        and args.area == "display"
+        and args.display_action == "reconfigure"
+    ):
+        raise ToolError("dpkg-reconfigure needs a direct interactive terminal")
     steps = repair_steps(platform, args.area, args.display_action, args.target)
     heading("Repair plan")
     if args.area == "display":
@@ -278,6 +289,30 @@ def self_test() -> int:
         "battery",
     }
     assert _disk_command("health")[-1] == "health"
+    assert all(
+        command in (_windows_query("all") or "")
+        for command in (
+            "Win32_Processor",
+            "Win32_PhysicalMemory",
+            "Win32_VideoController",
+            "Get-NetAdapter",
+            "Win32_Battery",
+        )
+    )
+    if (
+        os.name != "nt"
+        and getattr(os, "geteuid", lambda: 1)() != 0
+        and find_program("sudo", "doas")
+    ):
+        previous = os.environ.get("SCRIPTS_TUI")
+        os.environ["SCRIPTS_TUI"] = "1"
+        try:
+            assert elevated(("true",))[1] == "-n"
+        finally:
+            if previous is None:
+                os.environ.pop("SCRIPTS_TUI", None)
+            else:
+                os.environ["SCRIPTS_TUI"] = previous
     print("ok: hardware diagnosis areas and delegated disk repair contract")
     return 0
 

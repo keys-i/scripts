@@ -146,6 +146,14 @@ class RunResult:
     cancelled: bool = False
 
 
+def cancel_allowed(phase: str) -> bool:
+    return phase != "Apply"
+
+
+def quit_allowed(phase: str, running: bool) -> bool:
+    return not running or cancel_allowed(phase)
+
+
 def host_platform() -> str:
     if sys.platform == "darwin":
         return "macos"
@@ -1479,7 +1487,9 @@ class ScriptsApp(App[None]):
             and self.started_at is None
         )
         self.query_one("#run", Button).disabled = not available
-        self.query_one("#cancel", Button).disabled = self.process is None
+        self.query_one("#cancel", Button).disabled = (
+            self.process is None or not cancel_allowed(self.active_phase)
+        )
         supported = sum(script.supported for script in self.scripts)
         state = "running" if self.started_at is not None else "ready"
         self.query_one("#status", Static).update(
@@ -1587,13 +1597,21 @@ class ScriptsApp(App[None]):
             self.run_selection(selection)
 
     def action_cancel_run(self) -> None:
-        if self.process is not None:
+        if self.process is not None and cancel_allowed(self.active_phase):
             self.cancel_requested = True
             self.run_worker(
                 self.stop_process(),
                 group="cancel",
                 exclusive=True,
             )
+        elif self.process is not None:
+            self.notify("Apply cannot be cancelled safely", severity="warning")
+
+    def action_quit(self) -> None:
+        if not quit_allowed(self.active_phase, self.started_at is not None):
+            self.notify("Wait for Apply to finish before quitting", severity="warning")
+            return
+        self.exit()
 
     def begin_activity(self, script: ScriptSpec, phase: str) -> None:
         self.query_one("#details-tabs", TabbedContent).active = "output-pane"
@@ -1809,6 +1827,8 @@ def _is_command(path: Path) -> bool:
 
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     expected = {"linux", "macos", "windows"}
+    assert cancel_allowed("Preview") and not cancel_allowed("Apply")
+    assert quit_allowed("Apply", False) and not quit_allowed("Apply", True)
     if not expected.issubset({script.platform for script in scripts}):
         raise GuiError("self-test needs Linux, macOS, and Windows help pages")
     documented = {script.path for script in scripts}

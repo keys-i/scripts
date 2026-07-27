@@ -11,6 +11,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from _common import (
     Step,
@@ -63,7 +64,7 @@ def inventory(repo: Path, *, fsck: bool = True) -> None:
 
 def audit(repo: Path) -> int:
     inventory(repo)
-    heading("Largest packed objects")
+    heading("History rewrite guidance")
     print(
         "Use `git filter-repo --analyze` before a rewrite; no object content "
         "is printed by this audit."
@@ -142,12 +143,11 @@ def rewrite(args: argparse.Namespace, repo: Path) -> int:
     if not args.path and not args.replace_text:
         raise ToolError("rewrite requires --path or --replace-text")
     status = run(
-        git_command(repo, "status", "--porcelain"),
+        git_command(repo, "status", "--porcelain", "--untracked-files=all"),
         capture=True,
-        check=False,
     )
-    if status.stdout and not args.force:
-        raise ToolError("working tree is dirty; commit/stash changes or pass --force")
+    if status.stdout:
+        raise ToolError("working tree is dirty; commit/stash changes before rewriting")
 
     command = _filter_repo_command(repo)
     if args.path:
@@ -204,6 +204,20 @@ def self_test() -> int:
     else:
         raise AssertionError("zero-duration expiry accepted without --force")
     assert git_command(Path.cwd() / "repo", "status")[-1] == "status"
+    with TemporaryDirectory() as directory:
+        repo = Path(directory)
+        run(git_command(repo, "init", "--quiet"))
+        run(git_command(repo, "config", "status.showUntrackedFiles", "no"))
+        (repo / "untracked").write_text("not in the bundle\n", encoding="utf-8")
+        try:
+            rewrite(
+                argparse.Namespace(path="secret", replace_text=None, force=True),
+                repo,
+            )
+        except ToolError as error:
+            assert "dirty" in str(error)
+        else:
+            raise AssertionError("forced rewrite accepted an untracked file")
     print("ok: Git audit, expiry, garbage-collection, and rewrite contracts")
     return 0
 
@@ -243,7 +257,9 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--backup", help="write the pre-rewrite Git bundle here")
     parser.add_argument(
-        "--force", action="store_true", help="allow risky immediate/dirty work"
+        "--force",
+        action="store_true",
+        help="allow immediate expiry or bypass filter-repo's fresh-clone guard",
     )
     parser.add_argument(
         "--apply", action="store_true", help="perform the previewed plan"

@@ -17,7 +17,6 @@
     {
       "name": "operation",
       "label": "Operation",
-      "flag": "--operation",
       "required": true,
       "default": "audit",
       "choices": [
@@ -37,8 +36,6 @@
       "name": "expire",
       "label": "Unreachable-object retention",
       "flag": "--expire",
-      "required": true,
-      "default": "30.days.ago",
       "placeholder": "30.days.ago"
     },
     {
@@ -67,8 +64,8 @@
     },
     {
       "flag": "--force",
-      "label": "Allow a dirty rewrite or immediate expiry",
-      "warning": "Force allows permanent immediate pruning and bypasses git-filter-repo's fresh-clone guard. Inspect the backup bundle first."
+      "label": "Allow immediate expiry or bypass the fresh-clone guard",
+      "warning": "Force allows permanent immediate pruning and bypasses git-filter-repo's fresh-clone guard. The working tree must still be clean."
     }
   ]
 }
@@ -80,7 +77,7 @@
 `git-filter-repo`, keeps normal garbage collection conservative, and exposes
 unreachable objects before removing them.
 
-The `tool` is `git`; choose an `--operation`, optionally point `--repo` at
+The `tool` is `git`; choose an operation, optionally point `--repo` at
 another work tree, and use `--backup` to override the rewrite bundle path.
 
 ## Operations
@@ -107,7 +104,9 @@ Immediate and zero-duration expiry is rejected unless `--force` is selected.
 Requires `git-filter-repo` and either `--path` or `--replace-text`. A
 `--path` is removed from every commit by default; select `--keep-path` to keep
 only that path. Before rewriting, the command creates a bundle containing every
-ref. Rewrites change commit IDs and can remove the `origin` remote.
+ref. The working tree must be clean, even with `--force`; uncommitted and
+untracked files are not stored in the bundle. Rewrites change commit IDs and can
+remove the `origin` remote.
 
 ## Direct CLI
 
