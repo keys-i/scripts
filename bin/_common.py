@@ -68,18 +68,23 @@ def run(
     cwd: Path | None = None,
     capture: bool = False,
     check: bool = True,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     print(color(f"$ {command_text(command)}", "2"), flush=True)
-    result = subprocess.run(
-        list(command),
-        cwd=cwd,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            list(command),
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ToolError(
+            f"{Path(command[0]).name} timed out after {timeout} seconds"
+        ) from error
     if check and result.returncode:
         detail = (result.stderr or result.stdout or "").strip()
         raise ToolError(
