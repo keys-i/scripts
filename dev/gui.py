@@ -67,7 +67,7 @@ ARCHIVE_LIMIT = 64 * 1024 * 1024
 FILE_PREVIEW_LIMIT = 256 * 1024
 OUTPUT_LINE_LIMIT = 8 * 1024
 HISTORY_LIMIT = 200
-HELP_SUFFIX = ".help"
+MAN_SUFFIX = ".man"
 SEARCH_DIRS = ("bin", "dev", "sys")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -447,7 +447,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
             f"{help_path}: findingExitCodes must contain unique integers from 1 to 255"
         )
 
-    script_path = Path(str(help_path)[: -len(HELP_SUFFIX)]).resolve()
+    script_path = Path(str(help_path)[: -len(MAN_SUFFIX)]).resolve()
     if not script_path.is_file():
         raise GuiError(f"{help_path}: adjacent script does not exist")
     try:
@@ -486,10 +486,10 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
 
 
 def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
-    help_paths = list(root.glob(f"*{HELP_SUFFIX}"))
+    help_paths = list(root.glob(f"*{MAN_SUFFIX}"))
     for directory in SEARCH_DIRS:
         if (root / directory).is_dir():
-            help_paths.extend((root / directory).rglob(f"*{HELP_SUFFIX}"))
+            help_paths.extend((root / directory).rglob(f"*{MAN_SUFFIX}"))
     scripts = tuple(
         sorted(
             (parse_help(path.resolve(), root) for path in help_paths),
@@ -497,7 +497,7 @@ def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
         )
     )
     if not scripts:
-        raise GuiError(f"{root}: no adjacent *{HELP_SUFFIX} pages found")
+        raise GuiError(f"{root}: no adjacent *{MAN_SUFFIX} pages found")
     return scripts
 
 
@@ -2079,7 +2079,7 @@ class ScriptsApp(App[None]):
 
 
 def _is_command(path: Path) -> bool:
-    if path.is_symlink() or not path.is_file() or path.name.endswith(HELP_SUFFIX):
+    if path.is_symlink() or not path.is_file() or path.name.endswith(MAN_SUFFIX):
         return False
     if path.suffix.lower() in {".bat", ".cmd", ".ps1"}:
         return True
@@ -2094,7 +2094,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     color = terminal_text("\x1b[38;2;1;2;3mcolor\x1b[0m")
     assert color.plain == "color" and color.spans
     if not expected.issubset({script.platform for script in scripts}):
-        raise GuiError("self-test needs Linux, macOS, and Windows help pages")
+        raise GuiError("self-test needs Linux, macOS, and Windows manuals")
     documented = {script.path for script in scripts}
     commands = {path.resolve() for path in root.iterdir() if _is_command(path)}
     commands |= {
@@ -2107,7 +2107,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     missing = sorted(path.relative_to(root) for path in commands - documented)
     if missing:
         names = ", ".join(path.as_posix() for path in missing)
-        raise GuiError(f"commands missing adjacent {HELP_SUFFIX} pages: {names}")
+        raise GuiError(f"commands missing adjacent {MAN_SUFFIX} manuals: {names}")
     hostile_preview = "path/```\n# forged review"
     fenced_preview = markdown_code_block(hostile_preview)
     assert fenced_preview.splitlines()[0] == "````text"
@@ -2153,7 +2153,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                 },
             ],
         }
-        help_path = script_path.with_name("probe.py.help")
+        help_path = script_path.with_name("probe.py.man")
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n"
             "# Probe\n\n`action`, `--query`, `--apply`, and `--yes` exercise "
