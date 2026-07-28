@@ -404,9 +404,11 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         )
     apply_when = _tokens(metadata, "applyWhen", help_path)
     direct_when = _tokens(metadata, "directWhen", help_path)
-    available_tokens = {
-        value for values in controllers.values() for value in values
-    } | {option.flag for option in options}
+    available_tokens = (
+        {value for values in controllers.values() for value in values}
+        | {option.flag for option in options}
+        | {parameter.flag for parameter in parameters if parameter.flag is not None}
+    )
     for name, tokens in (("applyWhen", apply_when), ("directWhen", direct_when)):
         invalid = set(tokens) - available_tokens
         if invalid:
