@@ -30,7 +30,7 @@ import urllib.request
 import zipfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import ClassVar
@@ -66,6 +66,7 @@ ARCHIVE_URL = "https://github.com/keys-i/scripts/archive/refs/heads/main.zip"
 ARCHIVE_LIMIT = 64 * 1024 * 1024
 FILE_PREVIEW_LIMIT = 256 * 1024
 OUTPUT_LINE_LIMIT = 8 * 1024
+HISTORY_LIMIT = 200
 HELP_SUFFIX = ".help"
 SEARCH_DIRS = ("bin", "dev", "sys")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
@@ -91,11 +92,15 @@ class GuiError(Exception):
     """An error that can be shown directly to the user."""
 
 
+Conditions = tuple[tuple[str, tuple[str, ...]], ...]
+
+
 @dataclass(frozen=True)
 class OptionSpec:
     flag: str
     label: str
     warning: str = ""
+    when: Conditions = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,7 @@ class ParameterSpec:
     placeholder: str = ""
     required: bool = False
     warning: str = ""
+    when: Conditions = ()
 
 
 @dataclass(frozen=True)
@@ -122,14 +128,22 @@ class ScriptSpec:
     options: tuple[OptionSpec, ...]
     apply_flag: str | None
     yes_flag: str | None
+    apply_when: tuple[str, ...] = ()
+    direct_when: tuple[str, ...] = ()
+    launchable: bool = True
 
     @property
     def supported(self) -> bool:
         return self.platform in {"any", host_platform()}
 
-    @property
-    def destructive(self) -> bool:
-        return self.apply_flag is not None
+    def needs_apply(self, arguments: Iterable[str]) -> bool:
+        selected = set(arguments)
+        return self.apply_flag is not None and (
+            not self.apply_when or bool(selected.intersection(self.apply_when))
+        )
+
+    def needs_direct_terminal(self, arguments: Iterable[str]) -> bool:
+        return bool(set(arguments).intersection(self.direct_when))
 
 
 @dataclass(frozen=True)
@@ -161,6 +175,55 @@ def _text(mapping: dict[str, object], key: str, source: Path) -> str:
     if not isinstance(value, str) or not value.strip():
         raise GuiError(f"{source}: {key} must be a non-empty string")
     return value.strip()
+
+
+def _conditions(
+    raw: object,
+    controllers: dict[str, set[str]],
+    source: Path,
+) -> Conditions:
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict) or not raw:
+        raise GuiError(f"{source}: when must be a non-empty object")
+    conditions: list[tuple[str, tuple[str, ...]]] = []
+    for name, values in raw.items():
+        if not isinstance(name, str) or name not in controllers:
+            raise GuiError(f"{source}: when references unknown choice {name!r}")
+        if (
+            not isinstance(values, list)
+            or not values
+            or any(not isinstance(value, str) for value in values)
+        ):
+            raise GuiError(f"{source}: when.{name} must be a non-empty string array")
+        invalid = set(values) - controllers[name]
+        if invalid:
+            raise GuiError(
+                f"{source}: when.{name} has unknown choices "
+                f"{', '.join(sorted(invalid))}"
+            )
+        conditions.append((name, tuple(dict.fromkeys(values))))
+    return tuple(conditions)
+
+
+def _tokens(metadata: dict[str, object], key: str, source: Path) -> tuple[str, ...]:
+    raw = metadata.get(key, [])
+    if not isinstance(raw, list) or any(
+        not isinstance(token, str)
+        or not token
+        or "\0" in token
+        or any(character.isspace() for character in token)
+        for token in raw
+    ):
+        raise GuiError(f"{source}: {key} must be an array of command tokens")
+    return tuple(dict.fromkeys(raw))
+
+
+def conditions_match(
+    conditions: Conditions,
+    selected: dict[str, str],
+) -> bool:
+    return all(selected.get(name) in values for name, values in conditions)
 
 
 def parse_help(help_path: Path, root: Path) -> ScriptSpec:
@@ -197,6 +260,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
     if not isinstance(raw_options, list):
         raise GuiError(f"{help_path}: options must be a JSON array")
     options: list[OptionSpec] = []
+    option_conditions: list[object] = []
     seen_flags: set[str] = set()
     for raw_option in raw_options:
         if not isinstance(raw_option, dict):
@@ -217,11 +281,13 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
                 warning=warning.strip(),
             )
         )
+        option_conditions.append(raw_option.get("when"))
 
     raw_parameters = metadata.get("parameters", [])
     if not isinstance(raw_parameters, list):
         raise GuiError(f"{help_path}: parameters must be a JSON array")
     parameters: list[ParameterSpec] = []
+    parameter_conditions: list[object] = []
     seen_names: set[str] = set()
     parameter_flags: set[str] = set()
     for raw_parameter in raw_parameters:
@@ -289,6 +355,31 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
                 warning=warning.strip(),
             )
         )
+        parameter_conditions.append(raw_parameter.get("when"))
+
+    controllers = {
+        parameter.name: {value for value, _label in parameter.choices}
+        for parameter in parameters
+        if parameter.choices
+    }
+    parameters = [
+        replace(
+            parameter,
+            when=_conditions(raw_when, controllers, help_path),
+        )
+        for parameter, raw_when in zip(
+            parameters,
+            parameter_conditions,
+            strict=True,
+        )
+    ]
+    options = [
+        replace(
+            option,
+            when=_conditions(raw_when, controllers, help_path),
+        )
+        for option, raw_when in zip(options, option_conditions, strict=True)
+    ]
 
     apply_flag = metadata.get("applyFlag")
     yes_flag = metadata.get("yesFlag")
@@ -311,6 +402,25 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
             f"{help_path}: apply controls cannot appear in options: "
             f"{', '.join(sorted(overlap))}"
         )
+    apply_when = _tokens(metadata, "applyWhen", help_path)
+    direct_when = _tokens(metadata, "directWhen", help_path)
+    available_tokens = {
+        value for values in controllers.values() for value in values
+    } | {option.flag for option in options}
+    for name, tokens in (("applyWhen", apply_when), ("directWhen", direct_when)):
+        invalid = set(tokens) - available_tokens
+        if invalid:
+            raise GuiError(
+                f"{help_path}: {name} has unknown tokens {', '.join(sorted(invalid))}"
+            )
+    if apply_when and apply_flag is None:
+        raise GuiError(f"{help_path}: applyWhen requires applyFlag")
+    if direct_when and apply_flag is None:
+        raise GuiError(f"{help_path}: directWhen requires applyFlag")
+
+    launchable = metadata.get("launchable", True)
+    if not isinstance(launchable, bool):
+        raise GuiError(f"{help_path}: launchable must be true or false")
 
     script_path = Path(str(help_path)[: -len(HELP_SUFFIX)]).resolve()
     if not script_path.is_file():
@@ -343,6 +453,9 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         options=tuple(options),
         apply_flag=apply_flag,
         yes_flag=yes_flag,
+        apply_when=apply_when,
+        direct_when=direct_when,
+        launchable=launchable,
     )
 
 
@@ -506,6 +619,11 @@ def command_for(script: ScriptSpec, flags: Iterable[str]) -> list[str]:
 
 def display_command(command: Iterable[str]) -> str:
     return shlex.join(command)
+
+
+def terminal_text(line: str) -> Text:
+    """Render ANSI/TrueColor output instead of exposing escape sequences."""
+    return Text.from_ansi(line)
 
 
 def read_file_preview(path: Path, root: Path) -> str:
@@ -712,6 +830,10 @@ class RunWizard(ModalScreen[RunSelection | None]):
         padding: 1;
     }
 
+    RunWizard .field-row {
+        height: auto;
+    }
+
     RunWizard .option-warning {
         color: $warning;
         margin: 0 0 1 4;
@@ -751,35 +873,46 @@ class RunWizard(ModalScreen[RunSelection | None]):
                     if not self.script.parameters and not self.script.options:
                         yield Static("This script has no optional flags.")
                     for index, parameter in enumerate(self.script.parameters):
-                        yield Label(parameter.label)
-                        if parameter.choices:
-                            yield Select(
-                                ((label, value) for value, label in parameter.choices),
-                                allow_blank=not parameter.required,
-                                value=parameter.default or Select.BLANK,
-                                id=f"parameter-{index}",
-                            )
-                        else:
-                            yield Input(
-                                value=parameter.default,
-                                placeholder=parameter.placeholder,
-                                id=f"parameter-{index}",
-                            )
-                        if parameter.warning:
-                            yield Static(
-                                f"⚠ {parameter.warning}",
-                                classes="option-warning",
-                            )
+                        with Vertical(
+                            id=f"parameter-row-{index}",
+                            classes="field-row",
+                        ):
+                            yield Label(parameter.label)
+                            if parameter.choices:
+                                yield Select(
+                                    (
+                                        (label, value)
+                                        for value, label in parameter.choices
+                                    ),
+                                    allow_blank=not parameter.required,
+                                    value=parameter.default or Select.BLANK,
+                                    id=f"parameter-{index}",
+                                )
+                            else:
+                                yield Input(
+                                    value=parameter.default,
+                                    placeholder=parameter.placeholder,
+                                    id=f"parameter-{index}",
+                                )
+                            if parameter.warning:
+                                yield Static(
+                                    f"⚠ {parameter.warning}",
+                                    classes="option-warning",
+                                )
                     for index, option in enumerate(self.script.options):
-                        yield Checkbox(
-                            f"{option.label}  [dim]{option.flag}[/]",
-                            id=f"option-{index}",
-                        )
-                        if option.warning:
-                            yield Static(
-                                f"⚠ {option.warning}",
-                                classes="option-warning",
+                        with Vertical(
+                            id=f"option-row-{index}",
+                            classes="field-row",
+                        ):
+                            yield Checkbox(
+                                f"{option.label}  [dim]{option.flag}[/]",
+                                id=f"option-{index}",
                             )
+                            if option.warning:
+                                yield Static(
+                                    f"⚠ {option.warning}",
+                                    classes="option-warning",
+                                )
                 with Vertical(id="wizard-folder", classes="wizard-page"):
                     yield Static("Choose the directory the script should run from.")
                     with Horizontal(id="cwd-row"):
@@ -793,6 +926,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
                 yield Button("Next", variant="primary", id="wizard-next")
 
     def on_mount(self) -> None:
+        self.refresh_conditions()
         self.update_step()
 
     def action_cancel(self) -> None:
@@ -819,9 +953,38 @@ class RunWizard(ModalScreen[RunSelection | None]):
         if path is not None:
             self.query_one("#cwd", Input).value = str(path)
 
+    def controller_values(self) -> dict[str, str]:
+        selected: dict[str, str] = {}
+        for index, parameter in enumerate(self.script.parameters):
+            if not parameter.choices:
+                continue
+            value = self.query_one(f"#parameter-{index}", Select).value
+            selected[parameter.name] = "" if value is Select.BLANK else str(value)
+        return selected
+
+    def refresh_conditions(self) -> None:
+        selected = self.controller_values()
+        for index, parameter in enumerate(self.script.parameters):
+            self.query_one(f"#parameter-row-{index}").display = conditions_match(
+                parameter.when,
+                selected,
+            )
+        for index, option in enumerate(self.script.options):
+            self.query_one(f"#option-row-{index}").display = conditions_match(
+                option.when,
+                selected,
+            )
+
+    @on(Select.Changed)
+    def select_changed(self, _event: Select.Changed) -> None:
+        self.refresh_conditions()
+
     def selected_arguments(self) -> tuple[str, ...] | None:
         arguments: list[str] = []
+        selected = self.controller_values()
         for index, parameter in enumerate(self.script.parameters):
+            if not conditions_match(parameter.when, selected):
+                continue
             widget = self.query_one(f"#parameter-{index}", Input | Select)
             value = (
                 widget.value.strip()
@@ -840,7 +1003,8 @@ class RunWizard(ModalScreen[RunSelection | None]):
         arguments.extend(
             option.flag
             for index, option in enumerate(self.script.options)
-            if self.query_one(f"#option-{index}", Checkbox).value
+            if conditions_match(option.when, selected)
+            and self.query_one(f"#option-{index}", Checkbox).value
         )
         return tuple(arguments)
 
@@ -870,8 +1034,9 @@ class RunWizard(ModalScreen[RunSelection | None]):
             "wizard-review",
         )[self.step]
         self.query_one("#wizard-back", Button).disabled = self.step == 0
+        arguments = self.selected_arguments() if self.step == 2 else ()
         self.query_one("#wizard-next", Button).label = (
-            ("Preview" if self.script.destructive else "Run")
+            ("Preview" if self.script.needs_apply(arguments or ()) else "Run")
             if self.step == 2
             else "Next"
         )
@@ -898,19 +1063,26 @@ class RunWizard(ModalScreen[RunSelection | None]):
             warnings = [
                 option.warning
                 for option in self.script.options
-                if option.flag in arguments and option.warning
+                if conditions_match(option.when, self.controller_values())
+                and option.flag in arguments
+                and option.warning
             ]
             warnings.extend(
                 parameter.warning
                 for parameter in self.script.parameters
-                if parameter.warning
+                if conditions_match(parameter.when, self.controller_values())
+                and parameter.warning
             )
             caution = "\n".join(f"- {warning}" for warning in warnings)
+            needs_apply = self.script.needs_apply(arguments)
             flow = (
-                "This runs a read-only preview first. Apply repeats discovery "
-                "with the same settings, so targets may change between runs. "
-                "A successful preview must be followed by `CLEAN`."
-                if self.script.destructive
+                "This runs a read-only preview first, then shows the apply "
+                "command for a direct interactive terminal."
+                if needs_apply and self.script.needs_direct_terminal(arguments)
+                else "This runs a read-only preview first. Apply repeats "
+                "discovery with the same settings, so targets may change "
+                "between runs. A successful preview must be followed by `CLEAN`."
+                if needs_apply
                 else "This script starts as soon as you confirm this step."
             )
             self.query_one("#review", Markdown).update(
@@ -1044,7 +1216,9 @@ class ScriptsApp(App[None]):
     }
 
     Screen:inline {
-        height: 42;
+        height: 75vh;
+        min-height: 16;
+        max-height: 42;
         border: none;
     }
 
@@ -1277,6 +1451,14 @@ class ScriptsApp(App[None]):
     Screen.-short #toolbar {
         padding-top: 0;
     }
+
+    Screen.-short.-compact #catalog-panel {
+        height: 4;
+    }
+
+    Screen.-short.-compact #catalog-heading {
+        display: none;
+    }
     """
 
     def __init__(
@@ -1298,8 +1480,16 @@ class ScriptsApp(App[None]):
         self.active_phase = ""
         self.cancel_requested = False
         self.durations: list[float] = []
+        self.history_index = 0
         self.sort_column: str | None = None
         self.sort_reverse = False
+        self.catalog_query: str | None = None
+        self.search_text = {
+            script.script_id: (
+                f"{script.script_id} {script.title} {script.summary} {script.platform}"
+            ).casefold()
+            for script in scripts
+        }
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1377,7 +1567,7 @@ class ScriptsApp(App[None]):
                         )
                     with TabPane("Files", id="files-pane"):
                         yield Input(
-                            placeholder="Filter files",
+                            placeholder="Filter expanded folders",
                             id="file-filter",
                         )
                         with Horizontal(id="file-browser"):
@@ -1407,22 +1597,36 @@ class ScriptsApp(App[None]):
         self.set_interval(0.25, self.update_elapsed)
 
     def refresh_catalog(self, query: str = "") -> None:
+        if query == self.catalog_query:
+            return
+        self.catalog_query = query
         previous_id = self.selected.script_id if self.selected is not None else None
         words = query.casefold().split()
-        visible = []
-        for script in self.scripts:
-            searchable = (
-                f"{script.script_id} {script.title} {script.summary} {script.platform}"
-            ).casefold()
-            if all(word in searchable for word in words):
-                visible.append(script)
-        visible.sort(key=lambda script: (not script.supported, script.script_id))
+        visible = [
+            script
+            for script in self.scripts
+            if all(word in self.search_text[script.script_id] for word in words)
+        ]
+        visible.sort(
+            key=lambda script: (
+                not (script.supported and script.launchable),
+                not script.supported,
+                script.script_id,
+            )
+        )
         table = self.query_one("#scripts", DataTable)
         table.clear()
         for script in visible:
+            ready = script.supported and script.launchable
             state = Text(
-                "●" if script.supported else "○",
-                style="green" if script.supported else "bright_black",
+                "●" if ready else "◆" if not script.launchable else "○",
+                style=(
+                    "green"
+                    if ready
+                    else "bright_blue"
+                    if not script.launchable
+                    else "bright_black"
+                ),
             )
             table.add_row(
                 state,
@@ -1457,7 +1661,9 @@ class ScriptsApp(App[None]):
     def show_script(self, script: ScriptSpec) -> None:
         self.selected = script
         badge = (
-            "Available on this computer"
+            "Documentation only"
+            if not script.launchable
+            else "Available on this computer"
             if script.supported
             else f"Available on {script.platform}"
         )
@@ -1470,11 +1676,14 @@ class ScriptsApp(App[None]):
         available = (
             self.selected is not None
             and self.selected.supported
+            and self.selected.launchable
             and self.started_at is None
         )
         self.query_one("#run", Button).disabled = not available
         self.query_one("#cancel", Button).disabled = self.process is None
-        supported = sum(script.supported for script in self.scripts)
+        supported = sum(
+            script.supported and script.launchable for script in self.scripts
+        )
         state = "running" if self.started_at is not None else "ready"
         self.query_one("#status", Static).update(
             f"[b]{supported} of {len(self.scripts)}[/b] available · "
@@ -1483,12 +1692,22 @@ class ScriptsApp(App[None]):
 
     @on(Input.Changed, "#script-filter")
     def filter_scripts(self, event: Input.Changed) -> None:
-        self.refresh_catalog(event.value)
+        self.refresh_catalog_later(event.value)
+
+    @work(group="catalog-filter", exclusive=True)
+    async def refresh_catalog_later(self, query: str) -> None:
+        await asyncio.sleep(0.12)
+        self.refresh_catalog(query)
 
     @on(Input.Changed, "#file-filter")
-    async def filter_files(self, event: Input.Changed) -> None:
+    def filter_files(self, event: Input.Changed) -> None:
+        self.reload_file_tree(event.value)
+
+    @work(group="file-filter", exclusive=True)
+    async def reload_file_tree(self, query: str) -> None:
+        await asyncio.sleep(0.12)
         tree = self.query_one("#repo-tree", FilteredDirectoryTree)
-        tree.filter_text = event.value
+        tree.filter_text = query
         await tree.reload()
 
     @on(Select.Changed, "#theme")
@@ -1568,6 +1787,7 @@ class ScriptsApp(App[None]):
         if (
             self.selected is None
             or not self.selected.supported
+            or not self.selected.launchable
             or self.started_at is not None
         ):
             return
@@ -1625,14 +1845,20 @@ class ScriptsApp(App[None]):
             if result.exit_code == 0
             else "red"
         )
-        self.query_one("#history", DataTable).add_row(
+        history = self.query_one("#history", DataTable)
+        if history.row_count >= HISTORY_LIMIT:
+            history.remove_row(f"history-{self.history_index - HISTORY_LIMIT}")
+        history.add_row(
             datetime.now().astimezone().strftime("%H:%M:%S"),
             script.title,
             phase,
             Text(status, style=style),
             f"{result.duration:.1f}",
+            key=f"history-{self.history_index}",
         )
+        self.history_index += 1
         self.durations.append(result.duration)
+        del self.durations[:-HISTORY_LIMIT]
         self.query_one("#durations", Sparkline).data = self.durations
 
     async def run_once(
@@ -1678,25 +1904,29 @@ class ScriptsApp(App[None]):
                         truncated = False
                     else:
                         line = line.rstrip("\r")
-                        log.write(
+                        rendered = (
                             line
                             if len(line) <= OUTPUT_LINE_LIMIT
                             else line[:OUTPUT_LINE_LIMIT]
                             + " … [line truncated at 8 KiB]"
                         )
+                        log.write(terminal_text(rendered))
                 if truncated:
                     fragment = ""
                 elif len(fragment) > OUTPUT_LINE_LIMIT:
                     # ponytail: cap pathological lines; use a file viewer if
                     # retaining complete machine-generated output becomes useful.
                     log.write(
-                        fragment[:OUTPUT_LINE_LIMIT] + " … [line truncated at 8 KiB]"
+                        terminal_text(
+                            fragment[:OUTPUT_LINE_LIMIT]
+                            + " … [line truncated at 8 KiB]"
+                        )
                     )
                     fragment = ""
                     truncated = True
             fragment += decoder.decode(b"", final=True)
             if fragment and not truncated:
-                log.write(fragment)
+                log.write(terminal_text(fragment))
             exit_code = await self.process.wait()
             result = RunResult(
                 exit_code,
@@ -1735,19 +1965,27 @@ class ScriptsApp(App[None]):
     @work(group="script", exclusive=True)
     async def run_selection(self, selection: RunSelection) -> None:
         try:
+            needs_apply = selection.script.needs_apply(selection.flags)
             result = await self.run_once(
                 selection,
-                "Preview" if selection.script.destructive else "Run",
+                "Preview" if needs_apply else "Run",
                 selection.flags,
             )
-            if (
-                not selection.script.destructive
-                or result.exit_code != 0
-                or result.cancelled
-            ):
+            if not needs_apply or result.exit_code != 0 or result.cancelled:
                 return
             assert selection.script.apply_flag is not None
             assert selection.script.yes_flag is not None
+            if selection.script.needs_direct_terminal(selection.flags):
+                direct_flags = (*selection.flags, selection.script.apply_flag)
+                command = display_command(command_for(selection.script, direct_flags))
+                self.query_one("#activity-heading", Label).update(
+                    "Preview passed · direct terminal required"
+                )
+                self.query_one("#run-log", RichLog).write(
+                    "Interactive work cannot run inside the dashboard.\n"
+                    f"Run directly:\n$ {command}"
+                )
+                return
             apply_flags = (
                 *selection.flags,
                 selection.script.apply_flag,
@@ -1794,8 +2032,16 @@ class ScriptsApp(App[None]):
 
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     expected = {"linux", "macos", "windows"}
+    color = terminal_text("\x1b[38;2;1;2;3mcolor\x1b[0m")
+    assert color.plain == "color" and color.spans
     if not expected.issubset({script.platform for script in scripts}):
         raise GuiError("self-test needs Linux, macOS, and Windows help pages")
+    dashboard = next(
+        (script for script in scripts if script.script_id == "dev/gui.py"),
+        None,
+    )
+    if dashboard is None or dashboard.launchable:
+        raise GuiError("dashboard help must be present and non-launchable")
 
     with tempfile.TemporaryDirectory(prefix="scripts-gui-contract-") as directory:
         contract_root = Path(directory).resolve()
@@ -1805,31 +2051,49 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         metadata = {
             "summary": "Exercise typed parameters.",
             "platform": "any",
+            "applyFlag": "--apply",
+            "yesFlag": "--yes",
+            "applyWhen": ["fix"],
+            "directWhen": ["fix"],
+            "launchable": False,
             "parameters": [
                 {
                     "name": "action",
                     "label": "Action",
                     "required": True,
                     "default": "show",
-                    "choices": [{"value": "show", "label": "Show"}],
+                    "choices": [
+                        {"value": "show", "label": "Show"},
+                        {"value": "fix", "label": "Fix"},
+                    ],
                 },
                 {
                     "name": "query",
                     "label": "Query",
                     "flag": "--query",
                     "placeholder": "optional text",
+                    "when": {"action": ["fix"]},
                 },
             ],
         }
         help_path = script_path.with_name("probe.py.help")
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n"
-            "# Probe\n\n`action` and `--query` exercise typed parameters.\n",
+            "# Probe\n\n`action`, `--query`, `--apply`, and `--yes` exercise "
+            "typed parameters.\n",
             encoding="utf-8",
         )
         probe = parse_help(help_path, contract_root)
         assert probe.parameters[0].default == "show"
         assert probe.parameters[1].flag == "--query"
+        assert not probe.launchable
+        assert not probe.needs_apply(("show",))
+        assert probe.needs_apply(("fix",))
+        assert probe.needs_direct_terminal(("fix",))
+        assert not conditions_match(
+            probe.parameters[1].when,
+            {"action": "show"},
+        )
 
     compact = ScriptsApp(root, scripts)
     async with compact.run_test(size=(50, 18)) as pilot:
@@ -1837,6 +2101,18 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert compact.screen.has_class("-compact")
         table = compact.query_one("#scripts", DataTable)
         assert table.row_count == len(scripts)
+        details = compact.query_one("#details-tabs", TabbedContent).region
+        help_region = compact.query_one("#help", Markdown).region
+        assert details.height > 0 and details.y < compact.size.height
+        assert help_region.height > 0 and help_region.y < compact.size.height
+        compact.show_script(dashboard)
+        assert compact.query_one("#run", Button).disabled
+        compact.action_run()
+        assert not isinstance(compact.screen, RunWizard)
+        runnable = next(
+            script for script in scripts if script.supported and script.launchable
+        )
+        compact.show_script(runnable)
         await pilot.press("/")
         assert compact.focused is compact.query_one("#script-filter", Input)
         assert await pilot.click("#files-button")
@@ -1858,6 +2134,24 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(compact.screen, ModalScreen)
+        compact.push_screen(RunWizard(probe, root, False))
+        await pilot.pause()
+        conditional_wizard = compact.screen
+        assert isinstance(conditional_wizard, RunWizard)
+        hidden_query = conditional_wizard.query_one("#parameter-1", Input)
+        hidden_query.value = "ignored"
+        assert not conditional_wizard.query_one("#parameter-row-1").display
+        assert conditional_wizard.selected_arguments() == ("show",)
+        conditional_wizard.query_one("#parameter-0", Select).value = "fix"
+        await pilot.pause()
+        assert conditional_wizard.query_one("#parameter-row-1").display
+        assert conditional_wizard.selected_arguments() == (
+            "fix",
+            "--query",
+            "ignored",
+        )
+        await pilot.press("escape")
+        await pilot.pause()
 
     wide = ScriptsApp(root, scripts)
     async with wide.run_test(size=(140, 40)) as pilot:
@@ -1879,6 +2173,10 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                 None,
                 None,
             )
+            for _index in range(HISTORY_LIMIT + 1):
+                wide.record(script, "History test", RunResult(0, 0.1))
+            assert wide.query_one("#history", DataTable).row_count == HISTORY_LIMIT
+            assert len(wide.durations) == HISTORY_LIMIT
             result = await wide.run_once(
                 RunSelection(script, (), test_root),
                 "Stream test",
