@@ -1,0 +1,34 @@
+---
+{
+  "summary": "List and launch only the repository scripts compatible with the current operating system.",
+  "platform": "any",
+  "launchable": false
+}
+---
+
+# OS-aware script launcher
+
+`run.sh` reads the existing adjacent `.help` contracts under `bin`, `dev`, and
+`sys`; it does not maintain a second script list. It detects Linux, macOS, or
+Windows internally, hides incompatible and non-launchable commands, and never
+uses `eval`.
+
+The launcher needs Python 3. Commands whose shebang declares `uv` also need
+`uv`, so their inline dependency contracts remain isolated and reproducible.
+
+## Usage
+
+```sh
+./run.sh list
+./run.sh security-audit audit --scope system
+./run.sh disk health
+./run.sh clean
+```
+
+Use a listed short name or its repository-relative path. Remaining arguments
+are passed unchanged to that command. Ambiguous names, traversal, malformed
+help metadata, symlinks, unsupported platforms, and incompatible scripts are
+rejected.
+
+`./run.sh --self-test` validates all three operating-system catalogs without
+running their commands.

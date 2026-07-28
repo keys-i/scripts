@@ -2,6 +2,7 @@
 {
   "summary": "Audit host and project security, correlate findings with CVEs and CISA KEV, and diagnose scanner readiness.",
   "platform": "any",
+  "findingExitCodes": [1],
   "parameters": [
     {
       "name": "action",
@@ -31,7 +32,8 @@
       "flag": "--target",
       "required": true,
       "default": ".",
-      "placeholder": "project directory or host path"
+      "placeholder": "project directory or host path",
+      "when": {"scope": ["project", "all"]}
     },
     {
       "name": "scanner",
@@ -39,6 +41,7 @@
       "flag": "--scanner",
       "required": true,
       "default": "auto",
+      "when": {"scope": ["project", "all"]},
       "choices": [
         {"value": "auto", "label": "All installed supported scanners"},
         {"value": "osv", "label": "OSV-Scanner v2 dependency matching"},
@@ -50,7 +53,8 @@
       "name": "kev-catalog",
       "label": "CISA KEV catalog",
       "flag": "--kev-catalog",
-      "placeholder": "path to known_exploited_vulnerabilities.json"
+      "placeholder": "path to known_exploited_vulnerabilities.json",
+      "when": {"scope": ["project", "all"]}
     },
     {
       "name": "fail-on",
@@ -58,6 +62,7 @@
       "flag": "--fail-on",
       "required": true,
       "default": "high",
+      "when": {"action": ["audit"]},
       "choices": [
         {"value": "none", "label": "Report findings without a severity failure"},
         {"value": "low", "label": "Fail on Low or higher"},
@@ -74,23 +79,29 @@
       "required": true,
       "default": "300",
       "placeholder": "positive whole number"
+    },
+    {
+      "name": "output",
+      "label": "Private JSON report",
+      "flag": "--output",
+      "placeholder": "optional report path"
     }
   ],
   "options": [
     {
       "flag": "--refresh-kev",
       "label": "Download the current CISA KEV JSON catalog",
-      "when": {"action": ["audit"]}
+      "when": {"scope": ["project", "all"]},
+      "warning": "Fetches CISA's fixed HTTPS feed and atomically writes a private local cache."
     },
     {
       "flag": "--json",
-      "label": "Emit one machine-readable report",
-      "when": {"action": ["audit"]}
+      "label": "Emit one machine-readable report"
     },
     {
       "flag": "--force",
       "label": "Allow a guarded filesystem-root or home-directory target",
-      "when": {"action": ["audit"]},
+      "when": {"scope": ["project", "all"]},
       "warning": "Broad scans can cross trust boundaries, expose filenames to local scanner processes, and take a long time."
     }
   ]
@@ -119,21 +130,31 @@ control status where the host exposes them.
 With `--scope project`, `--scanner auto` runs each installed supported scanner:
 OSV-Scanner v2 for dependency vulnerabilities, Trivy for filesystem
 vulnerabilities and misconfiguration, and Gitleaks for exposed secrets.
+Gitleaks checks both Git history and the current worktree. Recognized scanner
+policy/ignore inputs are disclosed because they can suppress results.
 `--scope all` combines both views.
 
-The selected `--fail-on` level controls only the process exit status. A
+The selected `--fail-on` level controls only the process exit status. Any
+applicable CISA KEV match also exits 1 unless `--fail-on none` is selected. A
 lower-severity item may still be urgent when it is internet-facing or in KEV,
 and a high CVSS score may be irrelevant when the vulnerable component is not
 present or reachable.
 
 `--timeout` limits each native probe or scanner run; a timeout is reported as
-incomplete coverage, never as a pass.
+incomplete coverage, never as a pass. An explicitly selected missing scanner,
+no usable scanner in `auto`, or failed/timed-out/invalid installed scanner
+coverage exits 2.
+
+`--output FILE` atomically writes the complete redacted JSON report with
+owner-only mode where the platform supports it. `--json` emits the same report
+to standard output.
 
 ### `doctor`
 
-Checks target safety, scanner executables and versions, native-platform
-support, and KEV catalog readability without performing a full scan. Missing
-optional scanners are reported with install guidance.
+Checks only the selected scope without performing a full scan. Project/all
+checks target safety, scanner executables and versions, and KEV readability;
+system/all checks native-platform support. Missing optional scanners are
+reported with install guidance.
 
 ## Direct CLI
 
@@ -141,8 +162,9 @@ optional scanners are reported with install guidance.
 security-audit audit --scope all --target .
 security-audit audit --scope project --target . --scanner auto
 security-audit audit --scope project --target . --scanner osv --fail-on high
-security-audit audit --scope system --refresh-kev
+security-audit doctor --scope project --refresh-kev
 security-audit audit --scope project --scanner gitleaks --target . --json
+security-audit audit --scope all --target . --output ./security-report.json
 security-audit doctor --scope all --target . --kev-catalog ./kev.json
 ```
 

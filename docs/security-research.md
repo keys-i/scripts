@@ -37,6 +37,7 @@ Primary sources:
 - [NVD vulnerability metrics and CVSS severity ranges](https://nvd.nist.gov/vuln-metrics/cvss)
 - [CISA Known Exploited Vulnerabilities Catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
 - [CISA machine-readable KEV JSON](https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json)
+- [CISA BOD 22-01 scope and FCEB remediation deadlines](https://www.cisa.gov/news-events/directives/bod-22-01-reducing-significant-risk-known-exploited-vulnerabilities)
 
 ### Correlation rules
 
@@ -45,6 +46,13 @@ identifiers such as GHSA, GO, or RUSTSEC can be correlated only when the
 scanner output supplies a CVE alias. Text resemblance is not enough. A result
 without a CVE remains visible but cannot be labelled as present or absent in
 KEV.
+
+KEV changes prioritization, not scanner severity: the report preserves the
+scanner's CVSS score, vector, and severity, then records the exact KEV evidence
+separately. Unless `--fail-on none` is selected, an applicable KEV match causes
+exit 1 even below the numeric severity threshold. A catalog `dueDate` is
+labelled as the CISA Federal Civilian Executive Branch due date; it is useful
+context for other users, not a universal legal deadline.
 
 Prioritization should consider, in order:
 
@@ -68,7 +76,10 @@ For source trees, the default `scan source` path discovers supported manifests
 and lockfiles. The auditor requests SARIF 2.1.0 so all three project scanners
 share one bounded parser; OSV includes advisory aliases, source locations,
 severity properties, and remediation links in that format. Its documented
-return codes distinguish findings and operational errors.
+return codes distinguish findings and operational errors. The normalized
+report retains CVSS and CWE evidence when supplied and extracts OSV's
+remediation section before bounding it, so fixed-version guidance is not
+discarded behind a long advisory.
 
 The auditor uses OSV for dependency evidence, not source-code review. Coverage
 depends on a recognized lockfile, manifest, SBOM, or artifact containing an
@@ -99,6 +110,12 @@ inspection, malware verdict, or proof that a configuration is exploitable.
 Repository-specific policy can produce false positives or hide accepted
 findings, so suppressions need an owner, reason, and review date.
 
+Before each project scanner runs, the auditor reports recognized top-level
+ignore/configuration files and scanner-prefixed environment variable names.
+It never prints those variable values. This disclosure is deliberately
+conservative: nested policy and scanner-default exclusions can still exist,
+so the original scanner invocation and repository policy remain part of review.
+
 Primary sources:
 
 - [Trivy filesystem target and scanner behavior](https://trivy.dev/docs/latest/target/filesystem/)
@@ -108,7 +125,9 @@ Primary sources:
 ### Gitleaks
 
 Gitleaks detects secret-like values in Git history, directories, files, or
-standard input. Its current commands are `git`, `dir`, and `stdin`; the former
+standard input. The auditor runs both `git` history and `dir` worktree scans
+for a repository so uncommitted or untracked files are not omitted. Its current
+commands are `git`, `dir`, and `stdin`; the former
 `detect` and `protect` commands are deprecated. JSON or SARIF reports include
 rule IDs, locations, commits, and fingerprints, and output can redact the
 matched secret.
@@ -165,6 +184,10 @@ defence layers, not guarantees:
 - Software Update supplies compatible security and stability updates. A
   reported current version does not update third-party software installed
   outside Apple's update channels.
+- The native probe currently establishes automatic update checks, not that
+  macOS installs every available update. On macOS 26.1 and later, separately
+  verify that Background Security Improvements are set to install
+  automatically; Apple exposes that control in Privacy & Security.
 
 Primary Apple sources:
 
@@ -172,6 +195,7 @@ Primary Apple sources:
 - [FileVault behavior and recovery considerations](https://support.apple.com/guide/mac-help/protect-data-on-your-mac-with-filevault-mh11785/mac)
 - [Firewall security in macOS](https://support.apple.com/guide/security/firewall-security-in-macos-seca0e83763f/web)
 - [Updating macOS with Software Update](https://support.apple.com/en-us/108382)
+- [Apple background updates and Background Security Improvements](https://support.apple.com/en-la/101591)
 
 ### Windows
 
@@ -189,6 +213,10 @@ User Account Control, and whether the Windows Update service is disabled:
 - Secure Boot permits trusted signed software during the boot process. It does
   not inspect applications after Windows starts and can depend on UEFI
   firmware support.
+- Windows devices must also complete the transition from expiring 2011 Secure
+  Boot certificates to the 2023 certificates. The auditor reads
+  `UEFICA2023Status` and `UEFICA2023Error`; this is distinct from merely seeing
+  that Secure Boot is enabled.
 - Windows Update provides current security fixes only while the Windows
   version remains supported.
 
@@ -198,6 +226,7 @@ Primary Microsoft sources:
 - [BitLocker overview and recovery-key requirement](https://support.microsoft.com/en-us/windows/bitlocker-overview-44c0c61c-989d-4a69-8822-b95cd49b1bbf)
 - [Firewall and network protection](https://support.microsoft.com/en-us/windows/security/windows-security/firewall-and-network-protection-in-the-windows-security-app)
 - [Windows 11 and Secure Boot](https://support.microsoft.com/en-us/windows/security/devicesecurity/windows-11-and-secure-boot)
+- [Microsoft's 2023 Secure Boot certificate registry status](https://support.microsoft.com/en-us/topic/a7be69c9-4634-42e1-9ca1-df06f43f360d)
 - [Windows Update lifecycle and security updates](https://support.microsoft.com/en-us/windows/deployment/updates-lifecycle/windows-update-faq)
 
 ### Ubuntu Linux
@@ -234,28 +263,48 @@ is absent.
 - `audit` and `doctor` are read-only. Findings recommend remediation but do not
   install packages, upgrade dependencies, rotate secrets, rewrite Git history,
   change host policy, or enable security controls.
-- `--refresh-kev` is the auditor's only explicit persistent write. It retrieves
-  CISA's JSON feed; an explicitly supplied `--kev-catalog` keeps the evidence
-  source under caller control. External scanners may maintain their own
-  vulnerability databases and caches.
+- The auditor intentionally does not invoke OSV guided fixes or a package
+  manager. Dependency changes can execute package scripts, consult
+  authenticated registries, and alter lockfiles; review the reported fixed
+  versions and vendor advisory before making that separate change.
+- `--refresh-kev` retrieves CISA's JSON feed and atomically writes its local
+  cache; an explicitly supplied `--kev-catalog` keeps the evidence source
+  under caller control. External scanners may maintain their own vulnerability
+  databases and caches.
+- `--output FILE` is another caller-selected write: it atomically saves the
+  complete redacted JSON report with owner-only mode where supported. This
+  preserves evidence that a bounded TUI output pane may no longer display.
 - Broad targets can traverse unrelated repositories, mounted volumes, caches,
   generated files, and sensitive paths. Filesystem-root scans therefore
   require `--force`, still obey per-check timeouts, and may remain incomplete.
 - Scanner databases and the KEV catalog change over time. Record tool versions,
   database/catalog dates, target revision, exclusions, and operational errors
   with every report.
+- A structurally valid KEV catalog more than 30 days old is marked `unknown`
+  rather than `pass`. This is an auditor freshness guard, not a CISA publication
+  promise; a current refresh remains the authoritative check.
 - Tools can return false positives, false negatives, duplicate aliases, missing
   severities, and conflicting vendor/NVD scores. Preserve the original scanner
   evidence and confirm remediation against the product vendor's current
   advisory.
 - Secret findings are sensitive. JSON reports should be access-controlled and
   must never include unredacted secret material.
+- An explicitly selected missing scanner, no usable scanner in `auto`, or an
+  installed scanner timeout/parse failure returns operational exit 2 rather
+  than a false-success exit 0. Missing optional tools remain visible when
+  another `auto` scanner completes. Native checks that cannot prove a setting
+  report `unknown`, never `pass`.
 - Local checks cannot observe cloud controls, network appliances, identity
   providers, SaaS-side data, firmware posture not exposed by the OS, or remote
   copies of a repository.
 - Passing a chosen threshold is not certification against CIS, NIST, PCI DSS,
   HIPAA, ISO 27001, or another framework. Compliance requires an explicit
   scope, control mapping, evidence retention, and accountable review.
+
+The native `system` scope is a posture check, not an installed-package CVE
+inventory or a guarantee that every pending vendor update is absent. Use the
+operating-system vendor's supported update inventory and endpoint management
+alongside this report.
 
 Use the report to decide what to inspect next. For a suspected compromise,
 preserve evidence, isolate affected systems where appropriate, rotate exposed
