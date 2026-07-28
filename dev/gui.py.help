@@ -2,6 +2,7 @@
 {
   "summary": "Browse, configure, and run every documented script in a responsive terminal dashboard.",
   "platform": "any",
+  "launchable": false,
   "parameters": [
     {
       "name": "root",

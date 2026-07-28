@@ -4,6 +4,8 @@
   "platform": "any",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
+  "applyWhen": ["fix"],
+  "directWhen": ["reconfigure"],
   "parameters": [
     {
       "name": "action",
@@ -35,6 +37,7 @@
       "name": "display-action",
       "label": "Linux display repair",
       "flag": "--display-action",
+      "when": {"action": ["fix"], "area": ["display"]},
       "choices": [
         {"value": "restart", "label": "Reset and restart the active display manager"},
         {"value": "drivers", "label": "Install Ubuntu's recommended signed drivers"},
@@ -45,6 +48,7 @@
       "name": "target",
       "label": "Storage target",
       "flag": "--target",
+      "when": {"action": ["fix"], "area": ["storage"]},
       "placeholder": "/dev/sda1, disk2s1, or C"
     }
   ],

@@ -4,6 +4,7 @@
   "platform": "any",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
+  "applyWhen": ["clean", "--fix", "--install"],
   "parameters": [
     {
       "name": "action",
@@ -22,6 +23,7 @@
       "flag": "--kind",
       "required": true,
       "default": "sessions",
+      "when": {"action": ["clean"]},
       "choices": [
         {"value": "sessions", "label": "Conversations and session history"},
         {"value": "memories", "label": "Agent-written durable memories"},
@@ -62,29 +64,34 @@
       "name": "query",
       "label": "Market search",
       "flag": "--query",
+      "when": {"action": ["market"]},
       "placeholder": "for example: Python security"
     },
     {
       "name": "source",
       "label": "Skill source to install",
       "flag": "--install",
+      "when": {"action": ["market"]},
       "placeholder": "owner/repository"
     },
     {
       "name": "skill",
       "label": "One skill from that source",
       "flag": "--skill",
+      "when": {"action": ["market"]},
       "placeholder": "optional skill name"
     }
   ],
   "options": [
     {
       "flag": "--fix",
-      "label": "Repair safe doctor findings"
+      "label": "Repair safe doctor findings",
+      "when": {"action": ["doctor"]}
     },
     {
       "flag": "--global",
-      "label": "Install the selected skill for the current user"
+      "label": "Install the selected skill for the current user",
+      "when": {"action": ["market"]}
     }
   ]
 }

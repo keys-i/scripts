@@ -4,6 +4,7 @@
   "platform": "any",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
+  "applyWhen": ["gc", "dangling", "rewrite"],
   "parameters": [
     {
       "name": "tool",
@@ -36,35 +37,41 @@
       "name": "expire",
       "label": "Unreachable-object retention",
       "flag": "--expire",
+      "when": {"operation": ["gc", "dangling"]},
       "placeholder": "30.days.ago"
     },
     {
       "name": "path",
       "label": "History path",
       "flag": "--path",
+      "when": {"operation": ["rewrite"]},
       "placeholder": "file or directory to remove from every commit"
     },
     {
       "name": "replace-text",
       "label": "Replacement expressions file",
       "flag": "--replace-text",
+      "when": {"operation": ["rewrite"]},
       "placeholder": "git-filter-repo replace-text file"
     },
     {
       "name": "backup",
       "label": "Pre-rewrite bundle",
       "flag": "--backup",
+      "when": {"operation": ["rewrite"]},
       "placeholder": "defaults inside .git"
     }
   ],
   "options": [
     {
       "flag": "--keep-path",
-      "label": "Keep only the history path instead of removing it"
+      "label": "Keep only the history path instead of removing it",
+      "when": {"operation": ["rewrite"]}
     },
     {
       "flag": "--force",
       "label": "Allow immediate expiry or bypass the fresh-clone guard",
+      "when": {"operation": ["gc", "dangling", "rewrite"]},
       "warning": "Force allows permanent immediate pruning and bypasses git-filter-repo's fresh-clone guard. The working tree must still be clean."
     }
   ]

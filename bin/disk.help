@@ -4,6 +4,8 @@
   "platform": "any",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
+  "applyWhen": ["recover", "fix"],
+  "directWhen": ["testdisk", "photorec"],
   "parameters": [
     {
       "name": "action",
@@ -27,6 +29,7 @@
       "name": "tool",
       "label": "Recovery method",
       "flag": "--tool",
+      "when": {"action": ["recover"]},
       "choices": [
         {"value": "mount", "label": "Mount read-only with the operating system"},
         {"value": "testdisk", "label": "TestDisk partition/filesystem recovery"},
@@ -38,13 +41,15 @@
       "name": "destination",
       "label": "PhotoRec output directory",
       "flag": "--destination",
+      "when": {"action": ["recover"]},
       "placeholder": "a directory on another physical disk"
     }
   ],
   "options": [
     {
       "flag": "--json",
-      "label": "Emit machine-readable inventory where supported"
+      "label": "Emit machine-readable inventory where supported",
+      "when": {"action": ["show"]}
     }
   ]
 }

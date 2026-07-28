@@ -79,15 +79,18 @@
   "options": [
     {
       "flag": "--refresh-kev",
-      "label": "Download the current CISA KEV JSON catalog"
+      "label": "Download the current CISA KEV JSON catalog",
+      "when": {"action": ["audit"]}
     },
     {
       "flag": "--json",
-      "label": "Emit one machine-readable report"
+      "label": "Emit one machine-readable report",
+      "when": {"action": ["audit"]}
     },
     {
       "flag": "--force",
       "label": "Allow a guarded filesystem-root or home-directory target",
+      "when": {"action": ["audit"]},
       "warning": "Broad scans can cross trust boundaries, expose filenames to local scanner processes, and take a long time."
     }
   ]
