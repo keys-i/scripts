@@ -42,7 +42,9 @@ outside the dashboard's control. Elevated Linux/macOS repairs fail fast unless
 sudo/doas policy permits non-interactive use; a normal terminal credential cache
 usually does not carry into the isolated child process. Run the displayed
 command directly when a password is required. Launch the Windows dashboard from
-an Administrator terminal for privileged actions.
+an Administrator terminal for privileged actions. Commands that need their own
+interactive terminal are previewed in the dashboard, which then shows the
+direct apply command.
 
 Without `--root`, the dashboard uses a local checkout when one can be found;
 otherwise it downloads a temporary copy of the repository and removes it when
