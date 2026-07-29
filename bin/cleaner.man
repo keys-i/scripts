@@ -84,6 +84,10 @@
 `git-filter-repo`, keeps normal garbage collection conservative, and exposes
 unreachable objects before removing them.
 
+> **Rewrite warning:** History rewrites change commit IDs. Keep the generated
+> bundle outside any later cleanup, coordinate force-pushes, and retain it
+> until every required ref has been verified.
+
 The `tool` is `git`; choose an operation, optionally point `--repo` at
 another work tree, and use `--backup` to override the rewrite bundle path.
 
@@ -97,9 +101,9 @@ It prints object metadata only, not object contents.
 ### `gc`
 
 Expires unreachable reflog entries and runs `git gc`. The default
-`--expire 30.days.ago` retains recent recovery points; use another Git
-approximate date when needed. `--expire now` and zero-duration dates are
-rejected unless `--force` is also selected.
+`--expire 30.days.ago` retains recent recovery points. Accepted values are
+`N.day(s).ago`, `N.week(s).ago`, `N.month(s).ago`, `N.year(s).ago`, or `now`.
+`now` and zero-duration values are rejected unless `--force` is also selected.
 
 ### `dangling`
 
@@ -127,3 +131,9 @@ cleaner git rewrite --replace-text replacements.txt
 
 Nothing mutates without `--apply`. Direct applies require typing `APPLY`; the
 shared TUI confirms with `CLEAN` and then supplies `--apply --yes`.
+
+## Exit status
+
+`0` means the audit or requested maintenance completed. `2` means the
+repository, arguments, dependency, backup, or Git operation was unsafe or
+failed. Invalid command-line syntax also exits `2`.

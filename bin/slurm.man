@@ -56,9 +56,16 @@
 # Slurm matrix builder
 
 One TOML file expands into multiple jobs, config files, branches, and
-hyperparameter combinations. `plan` and `render` work without Slurm; only
-`submit` needs `sbatch`. Choose the `action` in the dashboard or as the first
-positional argument.
+hyperparameter combinations. The launcher exposes it only on Linux because
+generated jobs target Bash and Slurm. Direct `plan` and `render` need Python
+3.11 and `uv` but no Slurm installation; only `submit` needs `sbatch`. Generated
+jobs may also require the configured `git`, module, Conda, GPU, `srun`, and
+`flock` tools. Choose the `action` in the dashboard or as the first positional
+argument.
+
+> **Configuration safety:** Review every rendered batch script before
+> submission. Do not put secrets in TOML variables because they are written
+> into those scripts.
 
 The generated scripts keep the useful safety checks from the former Bunya
 submission script: account and GPU defaults, clean Conda activation, scratch
@@ -119,9 +126,8 @@ command let only the first job prepare shared input. Remove the matching
 If `[cluster].account` is omitted, an `a_*` Unix group is used. Bunya defaults
 select `gpu_cuda`, one A100, `gpu`, and `cuda80gb`; explicitly set cluster
 values for other sites or CPU jobs. `environment.conda_env` must be absolute.
-Rendered files are private to the current user (`0700`). Do not put secrets in
-the TOML: environment variables are written into the generated batch script.
-Existing output files are never overwritten.
+Rendered files are private to the current user (`0700`). Existing output files
+are never overwritten.
 
 ## Direct CLI
 
@@ -136,3 +142,9 @@ slurm submit --config slurm.toml --apply
 `render` and `submit` preview the exact files first. Direct applies require
 typing `APPLY`; the shared TUI confirms with `CLEAN` and then supplies
 `--apply --yes`.
+
+## Exit status
+
+`0` means planning, rendering, or submission completed. `1` means an apply was
+cancelled. `2` means configuration, expansion, output, dependency, or
+submission failed.

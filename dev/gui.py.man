@@ -23,7 +23,7 @@
     },
     {
       "flag": "--self-test",
-      "label": "Validate help contracts and responsive layouts"
+      "label": "Validate manual contracts and responsive layouts"
     }
   ]
 }
@@ -35,20 +35,28 @@ Discovers adjacent `.man` manuals under `bin`, `dev`, and `sys`, then renders
 their Markdown, typed parameters, warnings, progress, files, and command output
 in one keyboard- and mouse-friendly interface.
 
-Destructive commands always preview first and require `CLEAN`. Apply phases
-disable the dashboard's Cancel and Quit actions because interrupting filesystem
-or Git maintenance can corrupt data. External process termination is still
-outside the dashboard's control. Elevated Linux/macOS repairs fail fast unless
-sudo/doas policy permits non-interactive use; a normal terminal credential cache
-usually does not carry into the isolated child process. Run the displayed
-command directly when a password is required. Launch the Windows dashboard from
-an Administrator terminal for privileged actions. Commands that need their own
-interactive terminal are previewed in the dashboard, which then shows the
-direct apply command.
+> **Apply safety:** Destructive commands always preview first and require
+> `CLEAN`. Cancel and Quit are disabled during apply because interrupting
+> filesystem or Git maintenance can corrupt data.
+
+External process termination is still outside the dashboard's control.
+Elevated Linux/macOS repairs fail fast unless sudo/doas policy permits
+non-interactive use; a normal terminal credential cache usually does not carry
+into the isolated child process. Run the displayed command directly when a
+password is required. Launch the Windows dashboard from an Administrator
+terminal for privileged actions. Commands that need their own interactive
+terminal are previewed in the dashboard, which then shows the direct apply
+command.
 
 Without `--root`, the dashboard uses a local checkout when one can be found;
 otherwise it downloads a temporary copy of the repository and removes it when
-the dashboard closes.
+the dashboard closes. Running requires `uv`; network access is needed only when
+the pinned Textual dependency is not cached or a repository copy must be
+downloaded.
+
+The dashboard colors headings, safety callouts, tables, links, and code with
+the selected terminal theme. The `.man` source remains plain Markdown, so it
+also works through `curl`, Glow, GitHub, and terminals without color.
 
 ## Options
 
@@ -57,7 +65,7 @@ the dashboard closes.
 | `--root PATH` | use one local scripts checkout |
 | `--inline` | run below the prompt on macOS or Linux |
 | `--nerd-fonts` | use Nerd Font file and folder icons |
-| `--self-test` | validate every help contract and compact/wide layouts |
+| `--self-test` | validate every manual contract and compact/wide layouts |
 
 ## Direct CLI
 
@@ -67,3 +75,8 @@ uv run dev/gui.py --root .
 uv run dev/gui.py --inline --nerd-fonts
 uv run dev/gui.py --root . --self-test
 ```
+
+## Exit status
+
+`0` means the dashboard or self-test closed normally. `1` means repository or
+manual discovery failed. Invalid command-line syntax exits `2`.

@@ -63,6 +63,10 @@ error messages. Linux uses tools such as `lscpu`, `journalctl`, `lspci`,
 `ubuntu-drivers`, `ip`, and `upower`; macOS uses `system_profiler` and `pmset`;
 Windows uses CIM, PnP, and networking PowerShell cmdlets.
 
+> **Session warning:** Linux display repair defaults to
+> `--display-action restart`, which restarts the active display manager and
+> ends graphical sessions. Save work before applying it.
+
 ## Actions
 
 ### `diagnose`
@@ -70,6 +74,8 @@ Windows uses CIM, PnP, and networking PowerShell cmdlets.
 Choose `--area all`, `cpu`, `memory`, `display`, `storage`, `network`, or
 `battery`. Missing optional commands are skipped. Storage health is handled by
 the sibling `disk` command so filesystem and SMART behavior stays in one place.
+Diagnosis is best-effort: failed native probes are printed but do not make the
+overall diagnosis command fail.
 
 ### `fix`
 
@@ -84,15 +90,9 @@ There is no generic safe software repair for failed processors, memory,
 batteries, or other physical parts. Diagnosis provides evidence for vendor
 tests or replacement.
 
-As of 2026-07-27, the referenced
-[`keys-i/gdm3-error-fix`](https://github.com/keys-i/gdm3-error-fix) repository
-returns 404 through Git and the GitHub API. Its
-[archived GPL-3.0 script](https://archive.softwareheritage.org/api/1/origin/https://github.com/keys-i/gdm3-error-fix/get/)
-was reviewed but not copied: it installed a parsed driver and LightDM,
-reconfigured LightDM, slept, and forced a reboot. The guarded workflow above
-covers its useful diagnosis and signed-driver goal without brittle output
-parsing, changing the selected display manager, arbitrary delays, or a forced
-reboot.
+The former `gdm3-error-fix` workaround is not bundled. Its useful diagnosis
+and signed-driver goal are covered by guarded native commands without changing
+the selected display manager, sleeping, or forcing a reboot.
 
 Dashboard previews work for every repair. GDM3 reconfiguration and any repair
 that needs an interactive administrator password must be applied from the
@@ -111,3 +111,9 @@ hardware fix --area storage --target /dev/sdb1 --apply
 
 Nothing mutates without `--apply`. Direct applies require typing `APPLY`; the
 shared TUI confirms with `CLEAN` and then supplies `--apply --yes`.
+
+## Exit status
+
+`0` means diagnosis completed or a repair plan ran; diagnosis remains
+best-effort when individual probes fail. `2` means the request, platform,
+dependency, privilege, or repair operation failed.

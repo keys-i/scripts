@@ -71,7 +71,8 @@ Only clean, understandable, and tested scripts are accepted.
   deleting or overwriting data.
 - Give every script shown in the dashboard an adjacent `<script>.man` file.
   Start it with JSON front matter describing its platform and options, then
-  write concise Markdown help. Destructive scripts must declare matching
+  write concise Markdown with a safety callout, direct examples, requirements,
+  and non-obvious exit statuses. Destructive scripts must declare matching
   `applyFlag` and `yesFlag` values.
 - Use `parameters` for guided positional arguments or valued flags. Each
   parameter needs a `name` and `label`; add `choices`, `default`, `required`,
