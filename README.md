@@ -9,7 +9,7 @@ here because they are useful, not because they need to become full projects.
 ## Using a Script
 
 The easiest way to use the collection is the interactive dashboard. It finds
-the right script, renders its help page, guides you through the available
+the right script, renders its manual, guides you through the available
 options, and streams the output:
 
 ```sh
@@ -26,6 +26,47 @@ The dashboard is full-screen by default. On macOS and Linux, add `--inline` to
 keep it below the prompt. Add `--nerd-fonts` when your terminal uses a Nerd
 Font. Use `/` to filter, `F1` for help, `F2` to run, `F3` for files, and `F5`
 to sort; every control also works with a mouse.
+
+The guided Python tools share that interface and remain useful directly:
+
+```sh
+bin/agent doctor
+bin/disk health
+bin/cleaner git audit
+bin/hardware diagnose --area all
+bin/security-audit audit --scope all --target .
+bin/slurm plan --config slurm.toml
+```
+
+From a local checkout, the OS-aware launcher lists only compatible commands
+and accepts the same arguments:
+
+```sh
+./run.sh list
+./run.sh security-audit audit --scope system
+./run.sh clean
+```
+
+They use the Python standard library and native operating-system commands.
+Read each adjacent `.man` page in the dashboard, or pass `--help` directly.
+The [agent research](docs/agent-tools.md) records supported clients and cleanup
+limits; the [security research](docs/security-research.md) explains scanner,
+CVE, KEV, and host-check coverage; the
+[Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
+
+Every runnable command under `bin`, `dev`, and `sys` has one adjacent Markdown
+manual. Render it in color without running the command:
+
+```sh
+curl -fsSL \
+  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man" |
+  glow -
+```
+
+[`glow`](https://github.com/charmbracelet/glow) hides the dashboard metadata
+and colors headings, callouts, tables, and code. Omit `| glow -` for portable
+plain Markdown. The dashboard applies the selected terminal theme to the same
+content, so there is no second help source to drift.
 
 Cleanup scripts always run a preview first. Applying repeats discovery with the
 same settings and requires typing `CLEAN`, so targets can change if the

@@ -33,15 +33,16 @@
 Clears regenerable caches left by package managers, desktop applications,
 browsers, Flatpak, Snap, and temporary-file policies.
 
-In the TUI, the first run is always a preview. Nothing is deleted until that
-preview finishes successfully and you type `CLEAN`. Apply repeats discovery
-with the same settings, so targets may change between the two runs.
+> **Preview first:** In the TUI, nothing is deleted until the preview finishes
+> successfully and you type `CLEAN`. Apply repeats discovery with the same
+> settings, so targets may change between the two runs.
 
 ## What it can clean
 
 - APT, DNF, Yum, Zypper, Pacman, APK, XBPS, Portage, and RPM-OSTree caches
 - XDG, Flatpak, Snap, and Firefox startup caches
-- stale current-user temporary files
+- temporary data selected by installed user and system tmpfiles policies
+- optional current-user entries in `/tmp` and `/var/tmp` with `--all-temp`
 - optional archived systemd journals and unreachable Nix or Guix store objects
 
 ## Safety
@@ -72,3 +73,8 @@ sys/linux/clean --help
 sys/linux/clean --verbose
 sys/linux/clean --apply
 ```
+
+## Exit status
+
+`0` means the preview or cleanup completed without warnings. `1` means input,
+platform, privilege, path validation, or one or more cleanup operations failed.

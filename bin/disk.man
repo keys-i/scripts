@@ -1,0 +1,131 @@
+---
+{
+  "summary": "Inspect, health-check, recover, and repair disks on all three desktop operating systems.",
+  "platform": "any",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "applyWhen": ["recover", "fix"],
+  "directWhen": ["testdisk", "photorec"],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "show",
+      "choices": [
+        {"value": "show", "label": "Show disks, partitions, volumes, and free space"},
+        {"value": "health", "label": "Health — SMART and native reliability data"},
+        {"value": "recover", "label": "Recover — read-only mount, TestDisk, or PhotoRec"},
+        {"value": "fix", "label": "Fix — verify first, then repair"}
+      ]
+    },
+    {
+      "name": "target",
+      "label": "Disk or volume target",
+      "flag": "--target",
+      "placeholder": "/dev/sda, disk2s1, C, or Windows disk number 0"
+    },
+    {
+      "name": "tool",
+      "label": "Recovery method",
+      "flag": "--tool",
+      "when": {"action": ["recover"]},
+      "choices": [
+        {"value": "mount", "label": "Mount read-only with the operating system"},
+        {"value": "testdisk", "label": "TestDisk partition/filesystem recovery"},
+        {"value": "photorec", "label": "PhotoRec signature-based file recovery"}
+      ],
+      "warning": "When omitted, Linux/macOS use a read-only mount and Windows uses TestDisk. TestDisk and PhotoRec require their own interactive terminal."
+    },
+    {
+      "name": "destination",
+      "label": "PhotoRec output directory",
+      "flag": "--destination",
+      "when": {"action": ["recover"]},
+      "placeholder": "a directory on another physical disk"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--json",
+      "label": "Emit machine-readable inventory where supported",
+      "when": {"action": ["show"]}
+    }
+  ]
+}
+---
+
+# Cross-platform disk manager
+
+Uses `lsblk`, `fsck`, `smartctl`, `nvme`, and `udisksctl` on Linux;
+`diskutil` and optional `smartctl` on macOS; and PowerShell Storage cmdlets on
+Windows. It does not implement a filesystem, SMART parser, or recovery engine.
+
+> **Data safety:** Stop writes to damaged media before recovery and send
+> recovered files to another physical disk. Back up irreplaceable data before
+> any repair; software cannot repair failing hardware.
+
+## Actions
+
+### `show`
+
+Lists physical disks, partitions, filesystems, labels, identifiers, mount
+points, capacity, and read-only/removable state. Select `--json` for native
+structured output.
+
+### `health`
+
+Shows OS reliability status and SMART data when `smartctl` is installed. Pass a
+specific `--target` for full device attributes. SMART warnings are evidence to
+back up and replace a disk, not something software can repair.
+
+### `recover`
+
+With no `--tool`, Linux and macOS attempt a read-only mount while Windows opens
+TestDisk. `--tool testdisk` opens partition recovery. `--tool photorec` carves
+files and requires an existing `--destination`. The script rejects a destination
+nested under the source path, but cannot prove that it is on a different
+physical disk; verify that yourself. On Windows it finds the official
+`testdisk_win.exe` or `photorec_win.exe` and source selection stays inside that
+tool; use an Administrator terminal. Stop writing to a damaged source first.
+
+### `fix`
+
+Runs a read-only verification first. Linux auto-repair is deliberately limited
+to an explicit, existing, unmounted ext2/3/4 block-device `--target`: it uses
+`e2fsck -f -n`, then the conservative preen mode `e2fsck -f -p`;
+reboot-required exit codes remain successful but are called out in the output.
+Other Linux filesystems need their own repair guidance. macOS defaults to `/`
+and uses `diskutil verify/repair`. Windows defaults to `C:` and uses
+`Repair-Volume -Scan` then `-SpotFix` from an Administrator terminal.
+
+## Direct CLI
+
+```sh
+disk show
+disk show --json
+disk health --target /dev/nvme0
+disk recover /dev/sdb1 --tool mount
+disk recover /dev/sdb --tool photorec --destination /mnt/recovery
+disk fix /dev/sdb1
+disk fix /dev/sdb1 --apply
+
+# Windows
+disk show 0
+disk health C
+disk recover --tool testdisk
+disk fix
+
+# macOS
+disk fix
+```
+
+Without `--apply`, recovery and repair print or run only read-only checks.
+Direct applies require typing `APPLY`; the shared TUI confirms with `CLEAN` and
+then supplies `--apply --yes`.
+
+## Exit status
+
+`show` and `health` return the selected native tool's status. A completed
+`recover` or `fix` plan returns `0`; invalid targets, missing tools, unsafe
+requests, and operational failures return `2`.

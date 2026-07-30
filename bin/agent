@@ -1,0 +1,809 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Clean, diagnose, and extend local AI-agent CLIs."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import stat
+import sys
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from uuid import UUID
+
+from _common import (
+    Step,
+    ToolError,
+    color,
+    confirmed,
+    find_program,
+    heading,
+    remove_targets,
+    run,
+    safe_targets,
+    show_steps,
+    warning,
+)
+
+
+@dataclass(frozen=True)
+class AgentSpec:
+    key: str
+    label: str
+    binaries: tuple[str, ...]
+    root: Path
+    skill_agent: str | None
+    skill_dir: Path | None
+    sessions: tuple[str, ...] = ()
+    memories: tuple[str, ...] = ()
+    caches: tuple[str, ...] = ()
+    configs: tuple[str, ...] = ()
+    reload_hint: str = "start a new session"
+    note: str = ""
+
+    @property
+    def binary(self) -> str | None:
+        return find_program(*self.binaries)
+
+
+def _xdg(name: str, fallback: Path) -> Path:
+    return Path(os.environ.get(name, fallback)).expanduser()
+
+
+def registry() -> dict[str, AgentSpec]:
+    home = Path.home()
+    codex = Path(os.environ.get("CODEX_HOME", home / ".codex"))
+    claude = Path(os.environ.get("CLAUDE_CONFIG_DIR", home / ".claude"))
+    gemini = home / ".gemini"
+    copilot = Path(os.environ.get("COPILOT_HOME", home / ".copilot"))
+    qwen = home / ".qwen"
+    opencode = _xdg("XDG_DATA_HOME", home / ".local/share") / "opencode"
+    kilo = home / ".kilocode"
+    cline = Path(os.environ.get("CLINE_DATA_DIR", home / ".cline/data"))
+    if goose_override := os.environ.get("GOOSE_PATH_ROOT"):
+        goose = Path(goose_override)
+    elif sys.platform == "darwin":
+        goose = home / "Library/Application Support/Block/goose"
+    elif os.name == "nt":
+        goose = (
+            Path(os.environ.get("APPDATA", home / "AppData/Roaming")) / "Block/goose"
+        )
+    else:
+        goose = _xdg("XDG_DATA_HOME", home / ".local/share") / "goose"
+    vibe = Path(os.environ.get("VIBE_HOME", home / ".vibe"))
+    amp = _xdg("XDG_CONFIG_HOME", home / ".config") / "amp"
+    kiro = Path(os.environ.get("KIRO_HOME", home / ".kiro"))
+    pi_agent = Path(os.environ.get("PI_CODING_AGENT_DIR", home / ".pi/agent"))
+    agents = [
+        AgentSpec(
+            "codex",
+            "OpenAI Codex CLI",
+            ("codex",),
+            codex,
+            "codex",
+            codex / "skills",
+            ("history.jsonl",),
+            ("memories", "memories_extensions/chronicle"),
+            ("cache", "runtime", "tmp", ".tmp"),
+            ("config.toml",),
+            "restart Codex or open a new thread",
+        ),
+        AgentSpec(
+            "claude-code",
+            "Anthropic Claude Code",
+            ("claude",),
+            claude,
+            "claude-code",
+            claude / "skills",
+            (),
+            (),
+            ("cache",),
+            ("settings.json",),
+            "run /reload-plugins or start a new session",
+        ),
+        AgentSpec(
+            "gemini-cli",
+            "Google Gemini CLI",
+            ("gemini",),
+            gemini,
+            "gemini-cli",
+            gemini / "skills",
+            (),
+            (),
+            ("tmp/*/logs", "tmp/*/plans"),
+            ("settings.json",),
+            "restart Gemini CLI",
+            (
+                "Review sessions with `gemini --list-sessions`, then delete "
+                "selected indexes or IDs with `gemini --delete-session`."
+            ),
+        ),
+        AgentSpec(
+            "github-copilot",
+            "GitHub Copilot CLI",
+            ("copilot",),
+            copilot,
+            "github-copilot",
+            copilot / "skills",
+            (),
+            (),
+            ("logs", "cache"),
+            ("settings.json", "mcp-config.json"),
+            "run /skills reload or start a new session",
+            (
+                "Use Copilot's interactive /session commands for conversations; "
+                "its managed session index is never removed."
+            ),
+        ),
+        AgentSpec(
+            "qwen-code",
+            "Qwen Code",
+            ("qwen", "qwen-code"),
+            qwen,
+            "qwen-code",
+            qwen / "skills",
+            (),
+            (),
+            ("cache",),
+            ("settings.json",),
+            "restart Qwen Code",
+            "Automatic conversation and memory cleanup is not verified.",
+        ),
+        AgentSpec(
+            "opencode",
+            "OpenCode",
+            ("opencode",),
+            opencode,
+            "opencode",
+            _xdg("XDG_CONFIG_HOME", home / ".config") / "opencode/skills",
+            (),
+            (),
+            ("log",),
+            (),
+            "start a new OpenCode session",
+        ),
+        AgentSpec(
+            "kilo",
+            "Kilo Code CLI",
+            ("kilo",),
+            kilo,
+            "kilo",
+            home / ".kilocode/skills",
+            (),
+            (),
+            (),
+            (),
+            "run /reload or start a new session",
+        ),
+        AgentSpec(
+            "cline",
+            "Cline CLI",
+            ("cline",),
+            cline,
+            "cline",
+            cline / "settings/skills",
+            (),
+            (),
+            ("logs",),
+            (),
+            "restart Cline",
+            "Use `cline history`; its managed session database is never removed.",
+        ),
+        AgentSpec(
+            "aider",
+            "Aider",
+            ("aider",),
+            Path.cwd(),
+            None,
+            None,
+            (
+                ".aider.chat.history.md",
+                ".aider.input.history",
+                ".aider.llm.history",
+            ),
+            (),
+            (".aider.tags.cache.v*",),
+            (".aider.conf.yml",),
+            "start a new Aider chat",
+            "Aider state is scoped to the current project.",
+        ),
+        AgentSpec(
+            "goose",
+            "goose",
+            ("goose",),
+            goose,
+            "goose",
+            _xdg("XDG_CONFIG_HOME", home / ".config") / "goose/skills",
+            (),
+            (),
+            ("cache", "data/logs"),
+            ("config/config.yaml",),
+            "restart goose",
+            "Use `goose session list/remove`; its managed database is never removed.",
+        ),
+        AgentSpec(
+            "vibe",
+            "Mistral Vibe CLI",
+            ("vibe",),
+            vibe,
+            "mistral-vibe",
+            vibe / "skills",
+            (),
+            (),
+            (),
+            ("config.toml",),
+            "run /reload or start a new session",
+            "Automatic conversation and log cleanup is not verified.",
+        ),
+        AgentSpec(
+            "amp",
+            "Amp",
+            ("amp",),
+            amp,
+            "amp",
+            _xdg("XDG_CONFIG_HOME", home / ".config") / "agents/skills",
+            (),
+            (),
+            ("logs",),
+            ("settings.json", "settings.jsonc"),
+            "use skill: list or start a new thread",
+            "Amp threads may be cloud-backed; remove them through Amp.",
+        ),
+        AgentSpec(
+            "cursor",
+            "Cursor Agent CLI",
+            ("cursor-agent", "cursor"),
+            home / ".cursor",
+            "cursor",
+            home / ".cursor/skills",
+        ),
+        AgentSpec(
+            "kiro-cli",
+            "Kiro CLI",
+            ("kiro-cli", "kiro"),
+            kiro,
+            "kiro-cli",
+            kiro / "skills",
+            (),
+        ),
+        AgentSpec(
+            "droid",
+            "Factory Droid",
+            ("droid",),
+            home / ".factory",
+            "droid",
+            home / ".factory/skills",
+        ),
+        AgentSpec(
+            "openhands",
+            "OpenHands CLI",
+            ("openhands",),
+            home / ".openhands",
+            "openhands",
+            home / ".openhands/skills",
+        ),
+        AgentSpec(
+            "pi",
+            "Pi coding agent",
+            ("pi",),
+            pi_agent,
+            "pi",
+            pi_agent / "skills",
+            (),
+        ),
+        AgentSpec(
+            "rovodev",
+            "Atlassian Rovo Dev CLI",
+            ("rovodev", "acli"),
+            home / ".rovodev",
+            "rovodev",
+            home / ".rovodev/skills",
+        ),
+    ]
+    return {agent.key: agent for agent in agents}
+
+
+def choose_agents(name: str) -> list[AgentSpec]:
+    agents = registry()
+    if name == "all":
+        return list(agents.values())
+    try:
+        return [agents[name]]
+    except KeyError as error:
+        raise ToolError(
+            f"unknown agent {name!r}; use `agent doctor --list-agents`"
+        ) from error
+
+
+def _read_json_lines(text: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    stripped = text.strip()
+    if not stripped:
+        return records
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        for line in stripped.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+        return records
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return [value] if isinstance(value, dict) else []
+
+
+def _codex_session_ids(root: Path) -> list[str]:
+    session_ids: set[str] = set()
+    for path in safe_targets(
+        root,
+        ("sessions/**/*.jsonl", "archived_sessions/*.jsonl"),
+    ):
+        try:
+            session_ids.add(str(UUID(path.stem[-36:])))
+        except ValueError:
+            continue
+    return sorted(session_ids)
+
+
+def _native_cleanup_unavailable(spec: AgentSpec, kind: str) -> bool:
+    if spec.binary is not None or kind not in {"sessions", "all"}:
+        return False
+    if spec.key == "codex":
+        return bool(_codex_session_ids(spec.root))
+    if spec.key == "claude-code":
+        return kind == "all" and spec.root.exists()
+    return spec.key in {"gemini-cli", "opencode"} and spec.root.exists()
+
+
+def _native_clean_steps(spec: AgentSpec, kind: str) -> list[Step]:
+    binary = spec.binary
+    if binary is None:
+        return []
+
+    if spec.key == "claude-code":
+        if kind in {"sessions", "memories"}:
+            warning(
+                "Claude's native purge combines sessions and auto-memory; "
+                "select `clean all` to preview it."
+            )
+            return []
+        if kind != "all":
+            return []
+        print("Claude scope: every project recorded in CLAUDE_CONFIG_DIR.")
+        command = (binary, "project", "purge", "--all")
+        preview = run((*command, "--dry-run"), check=False, timeout=30)
+        if preview.returncode == 1:
+            print("No matching Claude project state was found.")
+            return []
+        if preview.returncode:
+            warning(
+                f"Claude purge preview exited {preview.returncode}; "
+                "no Claude deletion was planned."
+            )
+            return []
+        return [
+            Step(
+                "Purge all recorded Claude project state",
+                (*command, "--yes"),
+            )
+        ]
+
+    if kind not in {"sessions", "all"}:
+        return []
+    if spec.key == "codex":
+        return [
+            Step(
+                f"Delete Codex session {session_id}",
+                (binary, "delete", session_id, "--force"),
+            )
+            for session_id in _codex_session_ids(spec.root)
+        ]
+    if spec.key == "gemini-cli":
+        run((binary, "--list-sessions"), check=False, timeout=20)
+        warning(
+            "Gemini session-list output has no stable machine-readable format; "
+            "use `gemini --delete-session INDEX_OR_ID` for selected sessions."
+        )
+        return []
+    if spec.key == "opencode":
+        result = run(
+            (binary, "session", "list", "--format", "json"),
+            capture=True,
+            check=False,
+            timeout=20,
+        )
+        if result.returncode:
+            warning(
+                f"OpenCode session listing exited {result.returncode}; "
+                "no OpenCode deletion was planned."
+            )
+            return []
+        steps: list[Step] = []
+        for record in _read_json_lines(result.stdout or ""):
+            session_id = record.get("id") or record.get("sessionID")
+            if isinstance(session_id, str):
+                steps.append(
+                    Step(
+                        f"Delete OpenCode session {session_id}",
+                        (binary, "session", "delete", session_id),
+                    )
+                )
+        return steps
+    return []
+
+
+def clean(args: argparse.Namespace) -> int:
+    heading(f"Agent clean · {args.kind}")
+    targets: list[Path] = []
+    steps: list[Step] = []
+    blocked = 0
+    selected = choose_agents(args.agent)
+    for spec in selected:
+        if _native_cleanup_unavailable(spec, args.kind):
+            warning(f"{spec.label}: executable missing; conversations left untouched")
+            blocked += 1
+        else:
+            steps.extend(_native_clean_steps(spec, args.kind))
+        patterns: list[str] = []
+        if args.kind in {"sessions", "all"}:
+            patterns.extend(spec.sessions)
+        if args.kind in {"memories", "all"}:
+            patterns.extend(spec.memories)
+        if args.kind in {"cache", "all"}:
+            patterns.extend(spec.caches)
+        if patterns:
+            try:
+                targets.extend(safe_targets(spec.root, patterns))
+            except ToolError as error:
+                warning(f"{spec.label}: skipped unsafe state root ({error})")
+        if spec.note:
+            warning(f"{spec.label}: {spec.note}")
+
+    targets = sorted(set(targets), key=str)
+    for path in targets:
+        print(f"  delete {path}")
+    show_steps(steps)
+    if not targets and not steps:
+        print("No safely automatable local state was found.")
+        return 1 if blocked else 0
+    warning("Close every selected agent before applying this plan.")
+    if not confirmed(
+        apply=args.apply,
+        yes=args.yes,
+        prompt=f"wipe {args.kind} state for {args.agent}",
+    ):
+        return 1 if blocked else 0
+    failed = blocked
+    for step in steps:
+        result = run(step.command, check=False)
+        if result.returncode:
+            warning(f"{step.label} exited {result.returncode}; continuing")
+            failed += 1
+    files, directories = remove_targets(targets)
+    print(color(f"Removed {files} files and {directories} directories.", "1;32"))
+    return 1 if failed else 0
+
+
+def _config_error(path: Path) -> str | None:
+    try:
+        if path.suffix.lower() == ".json":
+            json.loads(path.read_text(encoding="utf-8"))
+        elif path.suffix.lower() == ".toml":
+            tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+        return str(error)
+    return None
+
+
+def doctor(args: argparse.Namespace) -> int:
+    if args.list_agents:
+        for spec in registry().values():
+            status = color("installed", "32") if spec.binary else color("missing", "2")
+            print(f"{spec.key:<16} {status:<18} {spec.label}")
+        return 0
+
+    fixes: list[tuple[str, Path]] = []
+    failed = 0
+    for spec in choose_agents(args.agent):
+        heading(spec.label)
+        binary = spec.binary
+        if binary is None:
+            print(color("○ not installed", "2"))
+            continue
+        print(color(f"✓ executable: {binary}", "32"))
+        version = run((binary, "--version"), capture=True, check=False, timeout=10)
+        output = (version.stdout or version.stderr or "").strip().splitlines()
+        if version.returncode:
+            print(color(f"✗ version check exited {version.returncode}", "31"))
+            failed += 1
+        elif output:
+            print(f"  {output[0][:200]}")
+
+        if spec.key == "codex":
+            native_doctor = run(
+                (binary, "doctor", "--json"),
+                capture=True,
+                check=False,
+                timeout=30,
+            )
+            report = (native_doctor.stdout or native_doctor.stderr or "").strip()
+            if report:
+                print(report)
+            if native_doctor.returncode:
+                print(
+                    color(
+                        f"✗ native doctor exited {native_doctor.returncode}",
+                        "31",
+                    )
+                )
+                failed += 1
+            else:
+                print(color("✓ native doctor passed", "32"))
+
+        if spec.root.exists():
+            print(color(f"✓ state root: {spec.root}", "32"))
+            if os.name != "nt":
+                mode = stat.S_IMODE(spec.root.stat().st_mode)
+                if mode & 0o077:
+                    print(color(f"! permissions are {mode:03o}; recommend 700", "33"))
+                    fixes.append(("Restrict state-directory permissions", spec.root))
+        else:
+            print(color(f"○ no state root yet: {spec.root}", "2"))
+
+        for relative in spec.configs:
+            path = spec.root / relative
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in {".json", ".toml"}:
+                format_name = path.suffix.removeprefix(".").upper() or "unknown"
+                print(
+                    color(
+                        f"○ syntax not parsed ({format_name}): {path.name}",
+                        "2",
+                    )
+                )
+                continue
+            error = _config_error(path)
+            if error:
+                print(color(f"✗ invalid {path.name}: {error}", "31"))
+                failed += 1
+            else:
+                print(color(f"✓ readable config: {path.name}", "32"))
+
+        if spec.skill_dir is None:
+            print("  no native Agent Skills target")
+        elif not spec.skill_dir.exists():
+            print(
+                f"  skill directory will be created on first install: {spec.skill_dir}"
+            )
+            fixes.append(("Create skill directory", spec.skill_dir))
+        if spec.note:
+            print(f"  note: {spec.note}")
+
+    if args.fix:
+        heading("Repair plan")
+        for label, path in fixes:
+            print(f"  {label}: {path}")
+        if fixes and confirmed(
+            apply=args.apply,
+            yes=args.yes,
+            prompt=f"apply {len(fixes)} agent repairs",
+        ):
+            for label, path in fixes:
+                if label.startswith("Create"):
+                    path.mkdir(parents=True, exist_ok=True)
+                elif os.name != "nt":
+                    path.chmod(0o700)
+            print(color("Repairs applied.", "1;32"))
+    elif fixes:
+        print("\nRun with --fix to preview safe permission/directory repairs.")
+    return 1 if failed else 0
+
+
+def market(args: argparse.Namespace) -> int:
+    npx = find_program("npx")
+    if npx is None:
+        raise ToolError("npx is required; install a current Node.js release")
+    if args.install:
+        if args.agent == "all" and os.environ.get("SCRIPTS_TUI"):
+            raise ToolError("choose one target agent before installing a skill")
+        command = [npx, "--yes", "skills", "add", args.install]
+        if args.skill:
+            command.extend(("--skill", args.skill))
+        if args.agent != "all":
+            spec = choose_agents(args.agent)[0]
+            if spec.skill_agent is None:
+                raise ToolError(f"{spec.label} does not natively load Agent Skills")
+            command.extend(("--agent", spec.skill_agent))
+        if args.global_install:
+            command.append("--global")
+        if not args.apply:
+            command.append("--list")
+            heading("Skill install preview")
+            return run(command, check=False).returncode
+        if args.yes:
+            command.append("--yes")
+        warning("Skills can contain executable code. Install only reviewed sources.")
+        if not confirmed(
+            apply=True,
+            yes=args.yes,
+            prompt=f"install skills from {args.install}",
+        ):
+            return 0
+        result = run(command, check=False)
+        if result.returncode == 0 and args.agent in registry():
+            print(f"Reload with: {registry()[args.agent].reload_hint}")
+        return result.returncode
+
+    if not args.query and os.environ.get("SCRIPTS_TUI"):
+        raise ToolError("enter a market query in the wizard")
+    command = [npx, "--yes", "skills", "find"]
+    if args.query:
+        command.append(args.query)
+    heading("Indexed Agent Skills catalog")
+    print("Results come from the live skills CLI index; coverage is not exhaustive.")
+    return run(command, check=False).returncode
+
+
+def self_test() -> int:
+    agents = registry()
+    assert {"codex", "claude-code", "gemini-cli", "github-copilot"} <= agents.keys()
+    assert agents["codex"].sessions == ("history.jsonl",)
+    for key in (
+        "github-copilot",
+        "qwen-code",
+        "kilo",
+        "cline",
+        "goose",
+        "vibe",
+        "amp",
+        "cursor",
+        "kiro-cli",
+        "droid",
+        "openhands",
+        "pi",
+        "rovodev",
+    ):
+        assert not agents[key].sessions
+        assert not agents[key].memories
+    assert all(
+        ".db" not in pattern
+        for spec in agents.values()
+        for pattern in (*spec.sessions, *spec.memories)
+    )
+    assert _read_json_lines('{"id":"one"}\n{"id":"two"}') == [
+        {"id": "one"},
+        {"id": "two"},
+    ]
+    try:
+        run(
+            (sys.executable, "-c", "import time; time.sleep(1)"),
+            capture=True,
+            timeout=0.01,
+        )
+    except ToolError as error:
+        assert "timed out" in str(error)
+    else:
+        raise AssertionError("command timeout was not enforced")
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary) / "state"
+        outside = Path(temporary) / "outside"
+        root.mkdir()
+        outside.mkdir()
+        session_id = "12345678-1234-5678-9234-567812345678"
+        session_dir = root / "sessions/2026/07/27"
+        session_dir.mkdir(parents=True)
+        (session_dir / f"rollout-2026-07-27T00-00-00-{session_id}.jsonl").touch()
+        (session_dir / "unrecognised.jsonl").touch()
+        assert _codex_session_ids(root) == [session_id]
+        codex = AgentSpec("codex", "Codex", (sys.executable,), root, None, None)
+        assert _native_clean_steps(codex, "sessions")[0].command[1:] == (
+            "delete",
+            session_id,
+            "--force",
+        )
+        missing_codex = AgentSpec(
+            "codex",
+            "Codex",
+            ("scripts-test-missing-agent-cli",),
+            root,
+            None,
+            None,
+        )
+        assert _native_cleanup_unavailable(missing_codex, "sessions")
+        (outside / "session").touch()
+        try:
+            (root / "linked").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            try:
+                safe_targets(root, ("linked/*",))
+            except ToolError:
+                pass
+            else:
+                raise AssertionError("cleanup crossed a directory symlink")
+    print(f"ok: {len(agents)} agent definitions and safe state contracts")
+    return 0
+
+
+def add_safety(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--apply", action="store_true", help="perform the previewed work"
+    )
+    parser.add_argument("--yes", action="store_true", help="skip the APPLY prompt")
+
+
+def parse_args(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="agent",
+        description="Clean, diagnose, and extend local AI-agent CLIs.",
+    )
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    subparsers = parser.add_subparsers(dest="command")
+
+    clean_parser = subparsers.add_parser("clean", help="wipe selected local state")
+    clean_parser.add_argument(
+        "kind",
+        nargs="?",
+        choices=("sessions", "memories", "cache", "all"),
+        default="sessions",
+    )
+    clean_parser.add_argument(
+        "--kind",
+        dest="kind_flag",
+        choices=("sessions", "memories", "cache", "all"),
+    )
+    clean_parser.add_argument("--agent", default="all")
+    add_safety(clean_parser)
+
+    doctor_parser = subparsers.add_parser("doctor", help="check agent installations")
+    doctor_parser.add_argument("--agent", default="all")
+    doctor_parser.add_argument("--kind", help=argparse.SUPPRESS)
+    doctor_parser.add_argument("--fix", action="store_true")
+    doctor_parser.add_argument("--list-agents", action="store_true")
+    add_safety(doctor_parser)
+
+    market_parser = subparsers.add_parser("market", help="find and install skills")
+    market_parser.add_argument("query", nargs="?")
+    market_parser.add_argument("--query", dest="query_flag")
+    market_parser.add_argument("--kind", help=argparse.SUPPRESS)
+    market_parser.add_argument("--agent", default="all")
+    market_parser.add_argument("--install", metavar="OWNER/REPO")
+    market_parser.add_argument("--skill")
+    market_parser.add_argument("--global", dest="global_install", action="store_true")
+    add_safety(market_parser)
+
+    args = parser.parse_args(arguments)
+    if getattr(args, "kind_flag", None):
+        args.kind = args.kind_flag
+    if getattr(args, "query_flag", None):
+        args.query = args.query_flag
+    return args
+
+
+def main(arguments: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if arguments is None else arguments)
+    if args.self_test:
+        return self_test()
+    if args.command is None:
+        args = parse_args(["doctor"])
+    try:
+        return {"clean": clean, "doctor": doctor, "market": market}[args.command](args)
+    except (ToolError, OSError, TimeoutError) as error:
+        print(f"agent: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

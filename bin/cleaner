@@ -1,0 +1,296 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Safe frontends for repository cleanup and history rewriting."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from _common import (
+    Step,
+    ToolError,
+    apply_steps,
+    color,
+    heading,
+    require_program,
+    run,
+    warning,
+)
+
+EXPIRY = re.compile(r"^(?:\d+\.(?:days?|weeks?|months?|years?)\.ago|now)$")
+
+
+def checked_expiry(args: argparse.Namespace) -> str:
+    amount = args.expire.partition(".")[0]
+    immediate = args.expire == "now" or (amount.isdigit() and int(amount) == 0)
+    if immediate and not args.force:
+        raise ToolError("immediate expiry also requires --force")
+    return args.expire
+
+
+def git_command(repo: Path, *arguments: str) -> tuple[str, ...]:
+    return (require_program("git"), "-C", str(repo), *arguments)
+
+
+def repository(path: str | None) -> Path:
+    candidate = Path(path or ".").expanduser().resolve()
+    result = run(
+        (require_program("git"), "-C", str(candidate), "rev-parse", "--show-toplevel"),
+        capture=True,
+        check=False,
+    )
+    if result.returncode or not result.stdout:
+        raise ToolError(f"{candidate} is not inside a Git work tree")
+    return Path(result.stdout.strip()).resolve()
+
+
+def inventory(repo: Path, *, fsck: bool = True) -> None:
+    heading("Repository object inventory")
+    run(git_command(repo, "count-objects", "-vH"), check=False)
+    if fsck:
+        heading("Unreachable and dangling objects")
+        run(
+            git_command(repo, "fsck", "--full", "--unreachable", "--no-reflogs"),
+            check=False,
+        )
+
+
+def audit(repo: Path) -> int:
+    inventory(repo)
+    heading("History rewrite guidance")
+    print(
+        "Use `git filter-repo --analyze` before a rewrite; no object content "
+        "is printed by this audit."
+    )
+    return 0
+
+
+def gc(args: argparse.Namespace, repo: Path) -> int:
+    inventory(repo, fsck=False)
+    expiry = checked_expiry(args)
+    steps = [
+        Step(
+            f"Expire unreachable reflog entries older than {expiry}",
+            git_command(
+                repo, "reflog", "expire", f"--expire-unreachable={expiry}", "--all"
+            ),
+        ),
+        Step(
+            f"Garbage-collect objects older than {expiry}",
+            git_command(repo, "gc", f"--prune={expiry}"),
+        ),
+    ]
+    heading("Garbage-collection plan")
+    if apply_steps(
+        steps,
+        apply=args.apply,
+        yes=args.yes,
+        prompt=f"garbage-collect {repo}",
+    ):
+        inventory(repo, fsck=False)
+    return 0
+
+
+def dangling(args: argparse.Namespace, repo: Path) -> int:
+    expiry = checked_expiry(args)
+    inventory(repo)
+    heading("Reflog expiry preview")
+    run(
+        git_command(
+            repo,
+            "reflog",
+            "expire",
+            "--dry-run",
+            f"--expire-unreachable={expiry}",
+            "--all",
+        ),
+        check=False,
+    )
+    steps = [
+        Step(
+            f"Expire unreachable reflog entries older than {expiry}",
+            git_command(
+                repo, "reflog", "expire", f"--expire-unreachable={expiry}", "--all"
+            ),
+        ),
+        Step(
+            f"Prune newly unreachable objects older than {expiry}",
+            git_command(repo, "gc", f"--prune={expiry}"),
+        ),
+    ]
+    heading("Dangling-object cleanup plan")
+    apply_steps(
+        steps,
+        apply=args.apply,
+        yes=args.yes,
+        prompt=f"discard unreachable Git objects in {repo}",
+    )
+    return 0
+
+
+def _filter_repo_command(repo: Path) -> list[str]:
+    return [require_program("git"), "-C", str(repo), "filter-repo"]
+
+
+def rewrite(args: argparse.Namespace, repo: Path) -> int:
+    if not args.path and not args.replace_text:
+        raise ToolError("rewrite requires --path or --replace-text")
+    status = run(
+        git_command(repo, "status", "--porcelain", "--untracked-files=all"),
+        capture=True,
+    )
+    if status.stdout:
+        raise ToolError("working tree is dirty; commit/stash changes before rewriting")
+
+    command = _filter_repo_command(repo)
+    if args.path:
+        command.extend(("--path", args.path))
+        if not args.keep_path:
+            command.append("--invert-paths")
+    if args.replace_text:
+        replacements = Path(args.replace_text).expanduser().resolve()
+        if not replacements.is_file():
+            raise ToolError(f"replacement expressions do not exist: {replacements}")
+        command.extend(("--replace-text", str(replacements)))
+    if args.force:
+        command.append("--force")
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup = (
+        Path(args.backup).expanduser().resolve()
+        if args.backup
+        else repo / ".git" / f"pre-filter-{stamp}.bundle"
+    )
+    steps = [
+        Step(
+            f"Bundle every ref to {backup}",
+            git_command(repo, "bundle", "create", str(backup), "--all"),
+        ),
+        Step("Rewrite repository history", tuple(command)),
+    ]
+    heading("History rewrite plan")
+    warning("History rewriting changes commit IDs and may remove the origin remote.")
+    warning("Coordinate before force-pushing; old clones can reintroduce removed data.")
+    apply_steps(
+        steps,
+        apply=args.apply,
+        yes=args.yes,
+        prompt=f"rewrite every matching commit in {repo}",
+    )
+    return 0
+
+
+def self_test() -> int:
+    assert EXPIRY.fullmatch("30.days.ago")
+    assert EXPIRY.fullmatch("2.weeks.ago")
+    assert not EXPIRY.fullmatch("30 days ago")
+    try:
+        checked_expiry(argparse.Namespace(expire="now", force=False))
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("immediate expiry accepted without --force")
+    try:
+        checked_expiry(argparse.Namespace(expire="00.days.ago", force=False))
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("zero-duration expiry accepted without --force")
+    assert git_command(Path.cwd() / "repo", "status")[-1] == "status"
+    with TemporaryDirectory() as directory:
+        repo = Path(directory)
+        run(git_command(repo, "init", "--quiet"))
+        run(git_command(repo, "config", "status.showUntrackedFiles", "no"))
+        (repo / "untracked").write_text("not in the bundle\n", encoding="utf-8")
+        try:
+            rewrite(
+                argparse.Namespace(path="secret", replace_text=None, force=True),
+                repo,
+            )
+        except ToolError as error:
+            assert "dirty" in str(error)
+        else:
+            raise AssertionError("forced rewrite accepted an untracked file")
+    print("ok: Git audit, expiry, garbage-collection, and rewrite contracts")
+    return 0
+
+
+def parse_args(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="cleaner",
+        description="Audit, compact, and safely rewrite repositories.",
+    )
+    parser.add_argument("tool", nargs="?", choices=("git",), default="git")
+    parser.add_argument(
+        "operation_pos",
+        nargs="?",
+        choices=("audit", "gc", "dangling", "rewrite"),
+    )
+    parser.add_argument(
+        "--operation",
+        choices=("audit", "gc", "dangling", "rewrite"),
+        default="audit",
+    )
+    parser.add_argument("--repo", help="repository path (default: current directory)")
+    parser.add_argument(
+        "--expire",
+        default="30.days.ago",
+        help="Git approximate date used by gc/prune",
+    )
+    parser.add_argument("--path", help="path to remove from or retain in every commit")
+    parser.add_argument(
+        "--keep-path",
+        action="store_true",
+        help="retain only --path instead of removing it",
+    )
+    parser.add_argument(
+        "--replace-text",
+        metavar="FILE",
+        help="git-filter-repo replacement expressions",
+    )
+    parser.add_argument("--backup", help="write the pre-rewrite Git bundle here")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="allow immediate expiry or bypass filter-repo's fresh-clone guard",
+    )
+    parser.add_argument(
+        "--apply", action="store_true", help="perform the previewed plan"
+    )
+    parser.add_argument("--yes", action="store_true", help="skip the APPLY prompt")
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(arguments)
+    if not EXPIRY.fullmatch(args.expire):
+        parser.error("--expire must look like 30.days.ago, 2.weeks.ago, or now")
+    if args.operation_pos:
+        args.operation = args.operation_pos
+    return args
+
+
+def main(arguments: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if arguments is None else arguments)
+    if args.self_test:
+        return self_test()
+    try:
+        repo = repository(args.repo)
+        print(color(f"Repository: {repo}", "1;36"))
+        return {
+            "audit": lambda: audit(repo),
+            "gc": lambda: gc(args, repo),
+            "dangling": lambda: dangling(args, repo),
+            "rewrite": lambda: rewrite(args, repo),
+        }[args.operation]()
+    except (ToolError, OSError) as error:
+        print(f"cleaner git: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

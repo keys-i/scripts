@@ -1,0 +1,184 @@
+---
+{
+  "summary": "Audit host and project security, correlate findings with CVEs and CISA KEV, and diagnose scanner readiness.",
+  "platform": "any",
+  "findingExitCodes": [1],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "audit",
+      "choices": [
+        {"value": "audit", "label": "Audit — collect and prioritize security findings"},
+        {"value": "doctor", "label": "Doctor — check scanners, catalog, target, and platform support"}
+      ]
+    },
+    {
+      "name": "scope",
+      "label": "Scope",
+      "flag": "--scope",
+      "required": true,
+      "default": "all",
+      "choices": [
+        {"value": "all", "label": "Host configuration and project files"},
+        {"value": "system", "label": "Native operating-system security checks"},
+        {"value": "project", "label": "Dependencies, configuration, and secrets"}
+      ]
+    },
+    {
+      "name": "target",
+      "label": "Target",
+      "flag": "--target",
+      "required": true,
+      "default": ".",
+      "placeholder": "project file or directory",
+      "when": {"scope": ["project", "all"]}
+    },
+    {
+      "name": "scanner",
+      "label": "Project scanner",
+      "flag": "--scanner",
+      "required": true,
+      "default": "auto",
+      "when": {"scope": ["project", "all"]},
+      "choices": [
+        {"value": "auto", "label": "All installed supported scanners"},
+        {"value": "osv", "label": "OSV-Scanner v2 dependency matching"},
+        {"value": "trivy", "label": "Trivy filesystem vulnerabilities and misconfiguration"},
+        {"value": "gitleaks", "label": "Gitleaks repository and file secret detection"}
+      ]
+    },
+    {
+      "name": "kev-catalog",
+      "label": "CISA KEV catalog",
+      "flag": "--kev-catalog",
+      "placeholder": "path to known_exploited_vulnerabilities.json",
+      "when": {"scope": ["project", "all"]}
+    },
+    {
+      "name": "fail-on",
+      "label": "Failure threshold",
+      "flag": "--fail-on",
+      "required": true,
+      "default": "high",
+      "when": {"action": ["audit"]},
+      "choices": [
+        {"value": "none", "label": "Report findings without a severity failure"},
+        {"value": "low", "label": "Fail on Low or higher"},
+        {"value": "medium", "label": "Fail on Medium or higher"},
+        {"value": "high", "label": "Fail on High or Critical"},
+        {"value": "critical", "label": "Fail only on Critical"}
+      ],
+      "warning": "A threshold is an automation policy, not a risk decision; KEV and local exposure still require priority."
+    },
+    {
+      "name": "timeout",
+      "label": "Per-check timeout in seconds",
+      "flag": "--timeout",
+      "required": true,
+      "default": "300",
+      "placeholder": "10 to 1800 seconds"
+    },
+    {
+      "name": "output",
+      "label": "Private JSON report",
+      "flag": "--output",
+      "placeholder": "optional report path"
+    }
+  ],
+  "options": [
+    {
+      "flag": "--refresh-kev",
+      "label": "Download the current CISA KEV JSON catalog",
+      "when": {"scope": ["project", "all"]},
+      "warning": "Fetches CISA's fixed HTTPS feed and atomically writes a private local cache."
+    },
+    {
+      "flag": "--json",
+      "label": "Emit one machine-readable report"
+    },
+    {
+      "flag": "--force",
+      "label": "Allow a guarded filesystem-root or home-directory target",
+      "when": {"scope": ["project", "all"]},
+      "warning": "Broad scans can cross trust boundaries, expose filenames to local scanner processes, and take a long time."
+    }
+  ]
+}
+---
+
+# Cross-platform security audit
+
+Runs read-only host checks and delegates project analysis to established
+scanners. Results are normalized, grouped by severity, and matched to CISA's
+Known Exploited Vulnerabilities catalog when a finding contains a CVE ID.
+
+> **Evidence, not certification:** `audit` and `doctor` never apply
+> host-hardening changes, and a clean report is not proof that a host is secure
+> or compliant. Missing, failed, timed-out, or suppressed coverage must be
+> reviewed. `--refresh-kev` only refreshes the local catalog cache.
+
+## Actions
+
+### `audit`
+
+With `--scope system`, inspect native update, malware-protection, disk
+encryption, firewall, application-trust, secure-boot, and mandatory-access
+control status where the host exposes them.
+
+With `--scope project`, `--scanner auto` runs each installed supported scanner:
+OSV-Scanner v2 for dependency vulnerabilities, Trivy for filesystem
+vulnerabilities and misconfiguration, and Gitleaks for exposed secrets.
+Gitleaks checks both Git history and the current worktree. Recognized scanner
+policy/ignore inputs are disclosed because they can suppress results.
+`--scope all` combines both views.
+
+The selected `--fail-on` level controls only the process exit status. Any
+applicable CISA KEV match also exits 1 unless `--fail-on none` is selected. A
+lower-severity item may still be urgent when it is internet-facing or in KEV,
+and a high CVSS score may be irrelevant when the vulnerable component is not
+present or reachable.
+
+`--timeout` accepts 10 through 1800 seconds for each native probe or scanner
+run; a timeout is reported as incomplete coverage, never as a pass. An
+explicitly selected missing scanner, no usable scanner in `auto`, or
+failed/timed-out/invalid installed scanner coverage exits 2.
+
+`--output FILE` atomically writes the complete redacted JSON report with
+owner-only mode where the platform supports it. `--json` emits the same report
+to standard output.
+
+### `doctor`
+
+Checks only the selected scope without performing a full scan. Project/all
+checks target safety, scanner executables and versions, and KEV readability;
+system/all checks native-platform support. Missing optional scanners are
+reported with install guidance.
+
+## Direct CLI
+
+```sh
+security-audit audit --scope all --target .
+security-audit audit --scope project --target . --scanner auto
+security-audit audit --scope project --target . --scanner osv --fail-on high
+security-audit doctor --scope project --refresh-kev
+security-audit audit --scope project --scanner gitleaks --target . --json
+security-audit audit --scope all --target . --output ./security-report.json
+security-audit doctor --scope all --target . --kev-catalog ./kev.json
+```
+
+## Exit status
+
+`0` means requested coverage completed below the selected threshold. `1`
+means an audit met the finding or KEV failure policy. `2` means coverage was
+incomplete, invalid, unsafe, or operationally failed.
+
+Filesystem-root and home-directory targets are refused by default because they
+are slow and can cross unrelated trust boundaries. Use `--force` only after
+reviewing the target. Scanner processes receive the selected local path;
+review each scanner's privacy and data-source behavior before using it on
+sensitive code.
+
+See `docs/security-research.md` for the identifier model, official sources,
+platform coverage, prioritization method, and known blind spots.

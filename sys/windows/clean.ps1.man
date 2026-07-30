@@ -22,7 +22,7 @@
     },
     {
       "flag": "-Verbose",
-      "label": "Show every filesystem target"
+      "label": "Show skipped paths and failure details"
     }
   ]
 }
@@ -31,11 +31,13 @@
 # Windows cache cleaner
 
 Builds a guarded cleanup plan for regenerable Windows, application, package,
-browser, and development-tool caches.
+browser, and development-tool caches. It requires Windows PowerShell 5.1 or
+newer. Current-user temporary cleanup defaults to owned entries at least seven
+days old; `-AllTemp` includes all owned entries.
 
-In the TUI, the first run is always a preview. Nothing is deleted until that
-preview finishes successfully and you type `CLEAN`. Apply repeats discovery
-with the same settings, so targets may change between the two runs.
+> **Preview first:** In the TUI, nothing is deleted until the preview finishes
+> successfully and you type `CLEAN`. Apply repeats discovery with the same
+> settings, so targets may change between the two runs.
 
 ## What it can clean
 
@@ -49,6 +51,8 @@ with the same settings, so targets may change between the two runs.
 Normal cleanup runs without elevation. System cleanup is deliberately separate
 and requires an elevated 64-bit PowerShell process. The script validates local
 fixed-drive paths, refuses protected paths, and does not follow reparse points.
+Normal `-Apply` is refused from an elevated process. `-System` cannot be
+combined with `-AllTemp` or `-GlobalPackages`.
 
 Close browsers, packaged apps, and development tools before applying the plan.
 
@@ -59,7 +63,7 @@ Close browsers, packaged apps, and development tools before applying the plan.
 | `-AllTemp` | include recent current-user temp files |
 | `-System` | run the separate elevated Windows cleanup |
 | `-GlobalPackages` | clear the global NuGet package folder |
-| `-Verbose` | print every filesystem target |
+| `-Verbose` | show skipped paths and failure details |
 | `-Apply` | repeat discovery with deletion enabled |
 | `-Yes` | accept the script's prompt after TUI confirmation |
 
@@ -68,5 +72,13 @@ Close browsers, packaged apps, and development tools before applying the plan.
 ```powershell
 sys\windows\clean.ps1
 sys\windows\clean.ps1 -Verbose
+sys\windows\clean.ps1 -Apply -GlobalPackages
 sys\windows\clean.ps1 -Apply
+# Run separately from an elevated 64-bit PowerShell:
+sys\windows\clean.ps1 -Apply -System
 ```
+
+## Exit status
+
+`0` means the preview or cleanup completed without warnings. `1` means input,
+platform, privilege, path validation, or one or more cleanup operations failed.

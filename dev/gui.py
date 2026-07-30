@@ -67,7 +67,7 @@ ARCHIVE_LIMIT = 64 * 1024 * 1024
 FILE_PREVIEW_LIMIT = 256 * 1024
 OUTPUT_LINE_LIMIT = 8 * 1024
 HISTORY_LIMIT = 200
-HELP_SUFFIX = ".help"
+MAN_SUFFIX = ".man"
 SEARCH_DIRS = ("bin", "dev", "sys")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -128,6 +128,7 @@ class ScriptSpec:
     options: tuple[OptionSpec, ...]
     apply_flag: str | None
     yes_flag: str | None
+    finding_exit_codes: tuple[int, ...] = ()
     apply_when: tuple[str, ...] = ()
     direct_when: tuple[str, ...] = ()
     launchable: bool = True
@@ -145,6 +146,9 @@ class ScriptSpec:
     def needs_direct_terminal(self, arguments: Iterable[str]) -> bool:
         return bool(set(arguments).intersection(self.direct_when))
 
+    def has_findings(self, exit_code: int) -> bool:
+        return exit_code in self.finding_exit_codes
+
 
 @dataclass(frozen=True)
 class RunSelection:
@@ -158,6 +162,14 @@ class RunResult:
     exit_code: int
     duration: float
     cancelled: bool = False
+
+
+def cancel_allowed(phase: str) -> bool:
+    return phase != "Apply"
+
+
+def quit_allowed(phase: str, running: bool) -> bool:
+    return not running or cancel_allowed(phase)
 
 
 def host_platform() -> str:
@@ -423,8 +435,19 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
     launchable = metadata.get("launchable", True)
     if not isinstance(launchable, bool):
         raise GuiError(f"{help_path}: launchable must be true or false")
+    raw_finding_codes = metadata.get("findingExitCodes", [])
+    if (
+        not isinstance(raw_finding_codes, list)
+        or any(
+            type(code) is not int or not 1 <= code <= 255 for code in raw_finding_codes
+        )
+        or len(set(raw_finding_codes)) != len(raw_finding_codes)
+    ):
+        raise GuiError(
+            f"{help_path}: findingExitCodes must contain unique integers from 1 to 255"
+        )
 
-    script_path = Path(str(help_path)[: -len(HELP_SUFFIX)]).resolve()
+    script_path = Path(str(help_path)[: -len(MAN_SUFFIX)]).resolve()
     if not script_path.is_file():
         raise GuiError(f"{help_path}: adjacent script does not exist")
     try:
@@ -455,6 +478,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         options=tuple(options),
         apply_flag=apply_flag,
         yes_flag=yes_flag,
+        finding_exit_codes=tuple(raw_finding_codes),
         apply_when=apply_when,
         direct_when=direct_when,
         launchable=launchable,
@@ -462,12 +486,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
 
 
 def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
-    help_paths = (
-        path
-        for directory in SEARCH_DIRS
-        if (root / directory).is_dir()
-        for path in (root / directory).rglob(f"*{HELP_SUFFIX}")
-    )
+    help_paths = manual_paths(root, MAN_SUFFIX)
     scripts = tuple(
         sorted(
             (parse_help(path.resolve(), root) for path in help_paths),
@@ -475,8 +494,16 @@ def load_catalog(root: Path) -> tuple[ScriptSpec, ...]:
         )
     )
     if not scripts:
-        raise GuiError(f"{root}: no adjacent *{HELP_SUFFIX} pages found")
+        raise GuiError(f"{root}: no adjacent *{MAN_SUFFIX} pages found")
     return scripts
+
+
+def manual_paths(root: Path, suffix: str) -> list[Path]:
+    paths = list(root.glob(f"*{suffix}"))
+    for directory in SEARCH_DIRS:
+        if (root / directory).is_dir():
+            paths.extend((root / directory).rglob(f"*{suffix}"))
+    return paths
 
 
 def _valid_root(path: Path) -> bool:
@@ -621,6 +648,12 @@ def command_for(script: ScriptSpec, flags: Iterable[str]) -> list[str]:
 
 def display_command(command: Iterable[str]) -> str:
     return shlex.join(command)
+
+
+def markdown_code_block(text: str) -> str:
+    longest_run = max((len(match[0]) for match in re.finditer(r"`+", text)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return f"{fence}text\n{text}\n{fence}"
 
 
 def terminal_text(line: str) -> Text:
@@ -1089,8 +1122,8 @@ class RunWizard(ModalScreen[RunSelection | None]):
             )
             self.query_one("#review", Markdown).update(
                 f"# Review\n\n{flow}\n\n"
-                f"**Working directory:** `{directory}`\n\n"
-                f"```text\n{preview}\n```\n\n"
+                f"**Working directory:**\n\n{markdown_code_block(str(directory))}\n\n"
+                f"**Command:**\n\n{markdown_code_block(preview)}\n\n"
                 + (f"## Warnings\n\n{caution}\n" if caution else "")
             )
             self.step += 1
@@ -1308,6 +1341,22 @@ class ScriptsApp(App[None]):
 
     #help {
         height: 1fr;
+    }
+
+    #help MarkdownH1 {
+        color: $accent;
+    }
+
+    #help MarkdownH2 {
+        color: $primary;
+    }
+
+    #help MarkdownH3 {
+        color: $secondary;
+    }
+
+    #help MarkdownBlockQuote {
+        border-left: outer $warning;
     }
 
     #activity-heading {
@@ -1682,7 +1731,9 @@ class ScriptsApp(App[None]):
             and self.started_at is None
         )
         self.query_one("#run", Button).disabled = not available
-        self.query_one("#cancel", Button).disabled = self.process is None
+        self.query_one("#cancel", Button).disabled = (
+            self.process is None or not cancel_allowed(self.active_phase)
+        )
         supported = sum(
             script.supported and script.launchable for script in self.scripts
         )
@@ -1803,13 +1854,21 @@ class ScriptsApp(App[None]):
             self.run_selection(selection)
 
     def action_cancel_run(self) -> None:
-        if self.process is not None:
+        if self.process is not None and cancel_allowed(self.active_phase):
             self.cancel_requested = True
             self.run_worker(
                 self.stop_process(),
                 group="cancel",
                 exclusive=True,
             )
+        elif self.process is not None:
+            self.notify("Apply cannot be cancelled safely", severity="warning")
+
+    def action_quit(self) -> None:
+        if not quit_allowed(self.active_phase, self.started_at is not None):
+            self.notify("Wait for Apply to finish before quitting", severity="warning")
+            return
+        self.exit()
 
     def begin_activity(self, script: ScriptSpec, phase: str) -> None:
         self.query_one("#details-tabs", TabbedContent).active = "output-pane"
@@ -1839,10 +1898,16 @@ class ScriptsApp(App[None]):
         phase: str,
         result: RunResult,
     ) -> None:
-        status = "cancelled" if result.cancelled else str(result.exit_code)
+        status = (
+            "cancelled"
+            if result.cancelled
+            else "findings"
+            if script.has_findings(result.exit_code)
+            else str(result.exit_code)
+        )
         style = (
             "yellow"
-            if result.cancelled
+            if result.cancelled or script.has_findings(result.exit_code)
             else "green"
             if result.exit_code == 0
             else "red"
@@ -1956,6 +2021,8 @@ class ScriptsApp(App[None]):
             if result.cancelled
             else "passed"
             if result.exit_code == 0
+            else "findings"
+            if selection.script.has_findings(result.exit_code)
             else "failed"
         )
         self.query_one("#activity-heading", Label).update(
@@ -2032,18 +2099,54 @@ class ScriptsApp(App[None]):
             await process.wait()
 
 
+def _is_command(path: Path) -> bool:
+    if path.is_symlink() or not path.is_file() or path.name.endswith(MAN_SUFFIX):
+        return False
+    if path.suffix.lower() in {".bat", ".cmd", ".ps1"}:
+        return True
+    with path.open("rb") as script:
+        return script.read(2) == b"#!"
+
+
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     expected = {"linux", "macos", "windows"}
+    assert cancel_allowed("Preview") and not cancel_allowed("Apply")
+    assert quit_allowed("Apply", False) and not quit_allowed("Apply", True)
     color = terminal_text("\x1b[38;2;1;2;3mcolor\x1b[0m")
     assert color.plain == "color" and color.spans
     if not expected.issubset({script.platform for script in scripts}):
-        raise GuiError("self-test needs Linux, macOS, and Windows help pages")
+        raise GuiError("self-test needs Linux, macOS, and Windows manuals")
+    legacy = sorted(path.relative_to(root) for path in manual_paths(root, ".help"))
+    if legacy:
+        names = ", ".join(path.as_posix() for path in legacy)
+        raise GuiError(f"legacy .help manuals remain: {names}")
+    documented = {script.path for script in scripts}
+    commands = {path.resolve() for path in root.iterdir() if _is_command(path)}
+    commands |= {
+        path.resolve()
+        for directory in SEARCH_DIRS
+        if (root / directory).is_dir()
+        for path in (root / directory).rglob("*")
+        if _is_command(path)
+    }
+    missing = sorted(path.relative_to(root) for path in commands - documented)
+    if missing:
+        names = ", ".join(path.as_posix() for path in missing)
+        raise GuiError(f"commands missing adjacent {MAN_SUFFIX} manuals: {names}")
+    orphaned = sorted(path.relative_to(root) for path in documented - commands)
+    if orphaned:
+        names = ", ".join(path.as_posix() for path in orphaned)
+        raise GuiError(f"manuals without runnable commands: {names}")
+    hostile_preview = "path/```\n# forged review"
+    fenced_preview = markdown_code_block(hostile_preview)
+    assert fenced_preview.splitlines()[0] == "````text"
+    assert fenced_preview.splitlines()[-1] == "````"
     dashboard = next(
         (script for script in scripts if script.script_id == "dev/gui.py"),
         None,
     )
     if dashboard is None or dashboard.launchable:
-        raise GuiError("dashboard help must be present and non-launchable")
+        raise GuiError("dashboard manual must be present and non-launchable")
 
     with tempfile.TemporaryDirectory(prefix="scripts-gui-contract-") as directory:
         contract_root = Path(directory).resolve()
@@ -2057,6 +2160,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             "yesFlag": "--yes",
             "applyWhen": ["fix"],
             "directWhen": ["fix"],
+            "findingExitCodes": [1],
             "launchable": False,
             "parameters": [
                 {
@@ -2078,7 +2182,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                 },
             ],
         }
-        help_path = script_path.with_name("probe.py.help")
+        help_path = script_path.with_name("probe.py.man")
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n"
             "# Probe\n\n`action`, `--query`, `--apply`, and `--yes` exercise "
@@ -2092,6 +2196,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert not probe.needs_apply(("show",))
         assert probe.needs_apply(("fix",))
         assert probe.needs_direct_terminal(("fix",))
+        assert probe.has_findings(1) and not probe.has_findings(2)
         assert not conditions_match(
             probe.parameters[1].when,
             {"action": "show"},
@@ -2107,6 +2212,10 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         help_region = compact.query_one("#help", Markdown).region
         assert details.height > 0 and details.y < compact.size.height
         assert help_region.height > 0 and help_region.y < compact.size.height
+        for script in scripts:
+            compact.show_script(script)
+            await pilot.pause()
+            assert compact.selected is script
         compact.show_script(dashboard)
         assert compact.query_one("#run", Button).disabled
         compact.action_run()
@@ -2214,7 +2323,7 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="validate help contracts and render compact and wide layouts",
+        help="validate manual contracts and render compact and wide layouts",
     )
     return parser.parse_args(arguments)
 
