@@ -1,0 +1,67 @@
+---
+{
+  "summary": "Clean app, Xcode, Simulator, Homebrew, and temporary caches.",
+  "platform": "macos",
+  "applyFlag": "--apply",
+  "yesFlag": "--yes",
+  "options": [
+    {
+      "flag": "--all-temp",
+      "label": "Include recent user temp files",
+      "warning": "Recent temporary files may still be in use."
+    },
+    {
+      "flag": "--logs",
+      "label": "Include user application logs",
+      "warning": "Application and diagnostic logs can be useful for troubleshooting."
+    },
+    {
+      "flag": "--verbose",
+      "label": "Show every filesystem target"
+    }
+  ]
+}
+---
+
+# macOS cache cleaner
+
+Clears regenerable caches from applications, app containers, Xcode,
+Simulators, Homebrew, Quick Look, and current-user temporary storage.
+
+In the TUI, the first run is always a preview. Nothing is deleted until that
+preview finishes successfully and you type `CLEAN`. Apply repeats discovery
+with the same settings, so targets may change between the two runs.
+
+## What it can clean
+
+- user and sandboxed application caches
+- Xcode DerivedData and Simulator caches
+- unavailable Simulator devices
+- Homebrew downloads and old package versions
+- Quick Look caches and stale current-user temporary files
+
+## Safety
+
+Run it as your normal user, never through `sudo`. It does not target `/System`,
+`/Library`, APFS snapshots, swap, backups, documents, Application Support,
+Xcode archives, Trash, or live Simulator application data.
+
+Close applications, Xcode, and Simulator before applying the plan.
+
+## Options
+
+| Option | Meaning |
+| --- | --- |
+| `--all-temp` | include recent current-user temp files |
+| `--logs` | include user application and diagnostic logs |
+| `--verbose` | print every filesystem target |
+| `--apply` | repeat discovery with deletion enabled |
+| `--yes` | accept the script's prompt after TUI confirmation |
+
+## Direct CLI
+
+```sh
+sys/macos/clean --help
+sys/macos/clean --verbose
+sys/macos/clean --apply
+```
