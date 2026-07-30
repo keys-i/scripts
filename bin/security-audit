@@ -826,7 +826,7 @@ def _validate_kev_catalog(value: dict[str, Any]) -> None:
     if count != len(vulnerabilities):
         raise ToolError("CISA KEV catalog count does not match its vulnerabilities")
     try:
-        released = datetime.fromisoformat(value["dateReleased"].replace("Z", "+00:00"))
+        released = datetime.fromisoformat(value["dateReleased"])
     except ValueError as error:
         raise ToolError("CISA KEV catalog has an invalid release date") from error
     if released.tzinfo is None:
@@ -841,7 +841,7 @@ def _kev_catalog_finding(
     count: int,
     source: str,
 ) -> Finding:
-    released = datetime.fromisoformat(value["dateReleased"].replace("Z", "+00:00"))
+    released = datetime.fromisoformat(value["dateReleased"])
     age = max(0, (datetime.now(UTC) - released).days)
     stale = age > MAX_KEV_AGE_DAYS
     return Finding(
