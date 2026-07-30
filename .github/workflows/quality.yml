@@ -1,0 +1,161 @@
+name: Quality
+
+on:
+  merge_group:
+  pull_request:
+    branches: [main, gui]
+  push:
+    branches: [main, actions, gui, py]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  languages:
+    name: Detect languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build CodeQL matrix
+        id: detect
+        shell: bash
+        run: |
+          if git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' >/dev/null 2>&1; then
+            echo 'matrix={"include":[{"language":"actions"},{"language":"python"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"include":[{"language":"actions"}]}' >> "$GITHUB_OUTPUT"
+          fi
+
+  codeql:
+    name: CodeQL / ${{ matrix.language }}
+    needs: languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.languages.outputs.matrix) }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-and-quality
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        with:
+          category: /language:${{ matrix.language }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+
+  osv:
+    name: OSV scan
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+
+  python-audit:
+    name: Python / dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          python-version: "3.11"
+          enable-cache: false
+
+      - name: Audit script dependencies
+        shell: bash
+        run: |
+          mapfile -t scripts < <(
+            git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' || true
+          )
+          for script in "${scripts[@]}"; do
+            uv audit --script "$script"
+          done
+          (( ${#scripts[@]} )) || echo "No dependency-bearing Python scripts found"
+
+  python-security:
+    name: Python / security lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.32"
+          python-version: "3.11"
+          enable-cache: false
+
+      - name: Scan Python scripts
+        shell: bash
+        run: |
+          mapfile -t python_files < <(
+            git ls-files -- 'bin/_common.py'
+            git grep -Il '^#!/usr/bin/env -S uv run --script' -- '*.py' 'bin/*' || true
+          )
+          if (( ${#python_files[@]} == 0 )); then
+            echo "No Python scripts found"
+            exit 0
+          fi
+          uvx bandit@1.9.4 --quiet --severity-level medium "${python_files[@]}"
