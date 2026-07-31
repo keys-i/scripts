@@ -136,6 +136,10 @@ jobs:
           python-version: "3.11"
           enable-cache: false
 
+      - name: Test launcher
+        shell: bash
+        run: bash run.sh --self-test
+
       - name: Test dashboard
         if: hashFiles('dev/gui.py') != ''
         run: uv run dev/gui.py --self-test
