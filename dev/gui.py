@@ -1719,7 +1719,7 @@ class ScriptsApp(App[None]):
         for script in visible:
             ready = script.supported and script.launchable
             state = Text(
-                "●" if ready else "◆" if not script.launchable else "○",
+                "Ready" if ready else "Docs" if not script.launchable else "Other OS",
                 style=(
                     "green"
                     if ready
@@ -2159,6 +2159,21 @@ def _is_command(path: Path) -> bool:
 
 
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
+    from unittest.mock import patch
+
+    def layout_snapshot(app: ScriptsApp) -> dict[str, tuple[int, int, int, int]]:
+        snapshot = {}
+        for selector in (
+            "#hero",
+            "#toolbar",
+            "#catalog-panel",
+            "#details-tabs",
+            "#help",
+        ):
+            region = app.query_one(selector).region
+            snapshot[selector] = (region.x, region.y, region.width, region.height)
+        return snapshot
+
     expected = {"linux", "macos", "windows"}
     assert cancel_allowed("Preview") and not cancel_allowed("Apply")
     assert quit_allowed("Apply", False) and not quit_allowed("Apply", True)
@@ -2268,10 +2283,25 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             raise AssertionError("unknown manual metadata was accepted")
 
     run_root = root.parent
-    compact = ScriptsApp(root, scripts, working_directory=run_root)
+    with patch.dict(os.environ, {"NO_COLOR": "1"}):
+        compact = ScriptsApp(root, scripts, working_directory=run_root)
+    assert compact.no_color
     async with compact.run_test(size=(50, 18)) as pilot:
         await pilot.pause()
-        assert compact.screen.has_class("-compact")
+        assert compact.screen.classes == {"-compact", "-short"}
+        assert layout_snapshot(compact) == {
+            "#hero": (0, 0, 0, 0),
+            "#toolbar": (1, 1, 48, 7),
+            "#catalog-panel": (1, 8, 48, 4),
+            "#details-tabs": (1, 13, 48, 4),
+            "#help": (2, 15, 46, 2),
+        }
+        fallback_tree = compact.query_one("#repo-tree", FilteredDirectoryTree)
+        assert (
+            fallback_tree.ICON_FILE,
+            fallback_tree.ICON_NODE,
+            fallback_tree.ICON_NODE_EXPANDED,
+        ) == ("📄 ", "📁 ", "📂 ")
         table = compact.query_one("#scripts", DataTable)
         assert table.row_count == len(scripts)
         details = compact.query_one("#details-tabs", TabbedContent).region
@@ -2289,16 +2319,25 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         runnable = next(
             script for script in scripts if script.supported and script.launchable
         )
+        other_os = next(
+            script for script in scripts if not script.supported and script.launchable
+        )
+        assert table.get_row(runnable.script_id)[0].plain == "Ready"
+        assert table.get_row(dashboard.script_id)[0].plain == "Docs"
+        assert table.get_row(other_os.script_id)[0].plain == "Other OS"
         compact.show_script(runnable)
         await pilot.press("/")
         assert compact.focused is compact.query_one("#script-filter", Input)
-        assert await pilot.click("#files-button")
+        await pilot.press("f1")
+        assert compact.query_one("#details-tabs", TabbedContent).active == "help-pane"
+        await pilot.press("f3")
         assert compact.query_one("#details-tabs", TabbedContent).active == "files-pane"
+        assert compact.focused is compact.query_one("#file-filter", Input)
         selected_id = compact.selected.script_id if compact.selected else ""
-        compact.action_sort()
+        await pilot.press("f5")
         assert table.cursor_coordinate.row == table.get_row_index(selected_id)
 
-        compact.action_run()
+        await pilot.press("f2")
         await pilot.pause()
         assert isinstance(compact.screen, RunWizard)
         assert compact.screen.query_one("#cwd", Input).value == str(run_root)
@@ -2330,11 +2369,34 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         )
         await pilot.press("escape")
         await pilot.pause()
+        confirmed: list[bool] = []
+        compact.push_screen(ConfirmApply("echo safe"), confirmed.append)
+        await pilot.pause()
+        confirmation = compact.screen.query_one("#confirmation", Input)
+        confirmation.focus()
+        await pilot.press("C", "L", "E", "A", "N")
+        assert not compact.screen.query_one("#confirm-apply", Button).disabled
+        await pilot.press("enter")
+        await pilot.pause()
+        assert confirmed == [True]
 
-    wide = ScriptsApp(root, scripts)
+    wide = ScriptsApp(root, scripts, nerd_fonts=True)
     async with wide.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
-        assert wide.screen.has_class("-wide")
+        assert wide.screen.classes == {"-tall", "-wide"}
+        assert layout_snapshot(wide) == {
+            "#hero": (1, 1, 138, 5),
+            "#toolbar": (1, 6, 138, 4),
+            "#catalog-panel": (1, 10, 57, 29),
+            "#details-tabs": (59, 10, 80, 29),
+            "#help": (60, 12, 78, 27),
+        }
+        nerd_tree = wide.query_one("#repo-tree", FilteredDirectoryTree)
+        assert (
+            nerd_tree.ICON_FILE,
+            nerd_tree.ICON_NODE,
+            nerd_tree.ICON_NODE_EXPANDED,
+        ) == ("󰈔 ", "󰉋 ", "󰝰 ")
         with tempfile.TemporaryDirectory(prefix="scripts-gui-test-") as directory:
             test_root = Path(directory)
             probe = test_root / "long-line.py"
@@ -2363,7 +2425,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             )
             assert result.exit_code == 0 and not result.cancelled
 
-    print(f"ok: {len(scripts)} scripts, compact and wide layouts")
+    print(f"ok: {len(scripts)} scripts, layout snapshots, keyboard, and fallbacks")
 
 
 def parse_args(arguments: list[str]) -> argparse.Namespace:
@@ -2391,7 +2453,7 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="validate manual contracts and render compact and wide layouts",
+        help="validate manuals, layout snapshots, keyboard, and fallbacks",
     )
     return parser.parse_args(arguments)
 
