@@ -2,6 +2,7 @@
 {
   "summary": "List and launch only the repository scripts compatible with the current operating system.",
   "platform": "any",
+  "privilege": "user",
   "launchable": false
 }
 ---
@@ -25,6 +26,7 @@ can supply Python. `curl` and `tar` are also needed for streamed runs.
 ```sh
 ./run.sh --help
 ./run.sh list
+./run.sh matrix
 ./run.sh man disk
 ./run.sh security-audit audit --scope system
 ./run.sh disk health
@@ -39,6 +41,16 @@ Use a listed short name or its repository-relative path. Remaining arguments
 are passed unchanged to that command. Ambiguous names, traversal, malformed
 manual metadata, symlinks, unsupported platforms, and incompatible scripts are
 rejected.
+
+`./run.sh matrix` publishes the support and privilege contract directly from
+the same manual metadata. “Supported” means the command implements that OS;
+the command's manual still lists required native tools. Windows streaming uses
+Git Bash with native Windows Python or `uv`; WSL is treated as Linux. “Mixed”
+privilege means normal-user operation with elevation only for named repair or
+system actions. Slurm submission uses the configured scheduler account rather
+than operating-system administrator access. The apply-gate column describes
+the shared destructive-action gate; a dash does not promise read-only behavior,
+so consult the manual for direct report, cache, or catalog writes.
 
 `man SCRIPT` renders the adjacent manual with Glow when installed, or prints
 plain Markdown. Manuals for other operating systems remain viewable.
@@ -56,6 +68,7 @@ RUN='https://github.com/keys-i/scripts/raw/refs/heads/main/run.sh'
 
 curl -fsSL "$RUN" | bash
 curl -fsSL "$RUN" | bash -s -- list
+curl -fsSL "$RUN" | bash -s -- matrix
 curl -fsSL "$RUN" | bash -s -- man disk
 curl -fsSL "$RUN" | bash -s -- disk health
 ```
@@ -70,6 +83,6 @@ curl -fsSL \
 
 ## Exit status
 
-`list`, help, and the self-test return `0`; launcher validation errors return
-`2`; and a missing Python interpreter returns `127`. A launched command
+`list`, `matrix`, help, and the self-test return `0`; launcher validation errors
+return `2`; and a missing Python interpreter returns `127`. A launched command
 replaces the launcher, so its exit status passes through unchanged.

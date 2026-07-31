@@ -2,6 +2,7 @@
 {
   "summary": "Inspect, health-check, recover, and repair disks on all three desktop operating systems.",
   "platform": "any",
+  "privilege": "mixed",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["recover", "fix"],
@@ -71,13 +72,15 @@ Windows. It does not implement a filesystem, SMART parser, or recovery engine.
 
 Lists physical disks, partitions, filesystems, labels, identifiers, mount
 points, capacity, and read-only/removable state. Select `--json` for native
-structured output.
+structured output. In JSON mode, standard output contains only JSON; native
+failure details stay on standard error.
 
 ### `health`
 
 Shows OS reliability status and SMART data when `smartctl` is installed. Pass a
 specific `--target` for full device attributes. SMART warnings are evidence to
-back up and replace a disk, not something software can repair.
+back up and replace a disk, not something software can repair. A failed native
+inventory or NVMe probe is returned instead of being reported as success.
 
 ### `recover`
 

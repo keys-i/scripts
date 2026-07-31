@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _manual import PRIVILEGE_LABELS
+
 SEARCH_DIRS = ("bin", "dev", "sys")
 MAN_SUFFIX = ".man"
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
@@ -58,11 +60,19 @@ def catalog(root: Path) -> list[dict[str, object]]:
         value = metadata(help_path)
         platform = value.get("platform")
         summary = value.get("summary")
+        privilege = value.get("privilege")
+        apply_flag = value.get("applyFlag")
         launchable = value.get("launchable", True)
         if platform not in {"any", "linux", "macos", "windows"}:
             raise LauncherError(f"invalid platform in {help_path}")
         if not isinstance(summary, str) or not summary.strip():
             raise LauncherError(f"missing summary in {help_path}")
+        if privilege not in PRIVILEGE_LABELS:
+            raise LauncherError(f"invalid privilege in {help_path}")
+        if apply_flag is not None and (
+            not isinstance(apply_flag, str) or not apply_flag.startswith("-")
+        ):
+            raise LauncherError(f"invalid apply flag in {help_path}")
         if not isinstance(launchable, bool):
             raise LauncherError(f"invalid launchable value in {help_path}")
         script = Path(str(help_path)[: -len(MAN_SUFFIX)])
@@ -77,6 +87,8 @@ def catalog(root: Path) -> list[dict[str, object]]:
                 "path": script,
                 "manual": help_path,
                 "platform": platform,
+                "privilege": privilege,
+                "apply_flag": apply_flag,
                 "summary": summary.strip(),
                 "launchable": launchable,
             }
@@ -145,6 +157,27 @@ def show(entries: list[dict[str, object]], platform: str) -> None:
         print(f"  {name:<{width}}{location}\n    {summary}")
 
 
+def support_matrix(entries: list[dict[str, object]]) -> str:
+    lines = [
+        "| Command | Linux | macOS | Windows | Privilege | Apply gate | Launcher |",
+        "| --- | :---: | :---: | :---: | --- | --- | :---: |",
+    ]
+    for entry in entries:
+        platform = str(entry["platform"])
+        support = [
+            "yes" if platform in {"any", candidate} else "—"
+            for candidate in ("linux", "macos", "windows")
+        ]
+        privilege = PRIVILEGE_LABELS[str(entry["privilege"])]
+        apply_gate = str(entry["apply_flag"] or "—")
+        launcher = "run" if entry["launchable"] else "docs"
+        lines.append(
+            f"| `{entry['id']}` | {' | '.join(support)} | "
+            f"{privilege} | `{apply_gate}` | {launcher} |"
+        )
+    return "\n".join(lines)
+
+
 def launch(entry: dict[str, object], arguments: list[str]) -> None:
     script = Path(str(entry["path"]))
     suffix = script.suffix.lower()
@@ -202,6 +235,10 @@ def self_test(root: Path, entries: list[dict[str, object]]) -> None:
         )
     assert all(entry["id"] != "dev/gui.py" for entry in compatible(entries, host_os()))
     assert resolve(entries, host_os(), "run.sh", runnable=False)["id"] == "run.sh"
+    matrix = support_matrix(entries)
+    assert all(f"| `{entry['id']}` |" in matrix for entry in entries)
+    assert "User; elevation for some actions" in matrix
+    assert "User; Slurm account to submit" in matrix
     print(f"ok: {len(entries)} documented scripts and three OS catalogs")
 
 
@@ -216,7 +253,7 @@ def main(arguments: list[str]) -> int:
             show(entries, platform)
             return 0
         if arguments in (["--help"], ["-h"]):
-            print("Usage: ./run.sh <list|man SCRIPT|script_name> [arguments...]")
+            print("Usage: ./run.sh <list|matrix|man SCRIPT|script_name> [arguments...]")
             return 0
         if arguments == ["--self-test"]:
             self_test(root, entries)
@@ -224,12 +261,15 @@ def main(arguments: list[str]) -> int:
         if arguments == ["list"]:
             show(entries, platform)
             return 0
+        if arguments == ["matrix"]:
+            print(support_matrix(entries))
+            return 0
         if arguments[0] == "man":
             if len(arguments) != 2:
                 raise LauncherError("usage: ./run.sh man SCRIPT")
             return show_manual(resolve(entries, platform, arguments[1], runnable=False))
-        if arguments[0] == "list":
-            raise LauncherError("list does not accept arguments")
+        if arguments[0] in {"list", "matrix"}:
+            raise LauncherError(f"{arguments[0]} does not accept arguments")
         launch(resolve(entries, platform, arguments[0]), arguments[1:])
         return 0
     except (LauncherError, OSError, UnicodeError) as error:

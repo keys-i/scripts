@@ -2,6 +2,7 @@
 {
   "summary": "Clean user, package, browser, developer, and Windows caches.",
   "platform": "windows",
+  "privilege": "mixed",
   "applyFlag": "-Apply",
   "yesFlag": "-Yes",
   "options": [

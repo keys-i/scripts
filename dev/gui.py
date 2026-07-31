@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
+from _manual import PRIVILEGE_LABELS
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -72,6 +73,32 @@ SEARCH_DIRS = ("bin", "dev", "sys")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 PLATFORMS = {"any", "linux", "macos", "windows"}
+METADATA_KEYS = {
+    "summary",
+    "platform",
+    "privilege",
+    "applyFlag",
+    "yesFlag",
+    "applyWhen",
+    "directWhen",
+    "findingExitCodes",
+    "launchable",
+    "parameters",
+    "options",
+}
+OPTION_KEYS = {"flag", "label", "warning", "when"}
+PARAMETER_KEYS = {
+    "name",
+    "label",
+    "choices",
+    "default",
+    "flag",
+    "placeholder",
+    "required",
+    "warning",
+    "when",
+}
+CHOICE_KEYS = {"value", "label"}
 SCRIPT_DECK_THEME = Theme(
     name="script-deck",
     primary="#82aaff",
@@ -122,6 +149,7 @@ class ScriptSpec:
     title: str
     summary: str
     platform: str
+    privilege: str
     path: Path
     markdown: str
     parameters: tuple[ParameterSpec, ...]
@@ -187,6 +215,13 @@ def _text(mapping: dict[str, object], key: str, source: Path) -> str:
     if not isinstance(value, str) or not value.strip():
         raise GuiError(f"{source}: {key} must be a non-empty string")
     return value.strip()
+
+
+def _check_keys(
+    mapping: dict[str, object], allowed: set[str], label: str, source: Path
+) -> None:
+    if unknown := sorted(mapping.keys() - allowed):
+        raise GuiError(f"{source}: unknown {label} key(s): {', '.join(unknown)}")
 
 
 def _conditions(
@@ -256,6 +291,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         raise GuiError(f"{help_path}: invalid JSON: {error}") from error
     if not isinstance(metadata, dict):
         raise GuiError(f"{help_path}: front matter must be a JSON object")
+    _check_keys(metadata, METADATA_KEYS, "metadata", help_path)
 
     markdown = text[marker + 5 :].strip()
     heading = re.search(r"^# +(.+?)\s*$", markdown, re.MULTILINE)
@@ -267,6 +303,12 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         raise GuiError(
             f"{help_path}: platform must be one of {', '.join(sorted(PLATFORMS))}"
         )
+    privilege = _text(metadata, "privilege", help_path).lower()
+    if privilege not in PRIVILEGE_LABELS:
+        raise GuiError(
+            f"{help_path}: privilege must be one of "
+            f"{', '.join(sorted(PRIVILEGE_LABELS))}"
+        )
 
     raw_options = metadata.get("options", [])
     if not isinstance(raw_options, list):
@@ -277,6 +319,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
     for raw_option in raw_options:
         if not isinstance(raw_option, dict):
             raise GuiError(f"{help_path}: every option must be an object")
+        _check_keys(raw_option, OPTION_KEYS, "option", help_path)
         flag = _text(raw_option, "flag", help_path)
         if not FLAG_PATTERN.fullmatch(flag):
             raise GuiError(f"{help_path}: invalid option flag {flag!r}")
@@ -305,6 +348,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
     for raw_parameter in raw_parameters:
         if not isinstance(raw_parameter, dict):
             raise GuiError(f"{help_path}: every parameter must be an object")
+        _check_keys(raw_parameter, PARAMETER_KEYS, "parameter", help_path)
         name = _text(raw_parameter, "name", help_path)
         if not NAME_PATTERN.fullmatch(name):
             raise GuiError(f"{help_path}: invalid parameter name {name!r}")
@@ -331,6 +375,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         for raw_choice in raw_choices:
             if not isinstance(raw_choice, dict):
                 raise GuiError(f"{help_path}: {name} choices must be objects")
+            _check_keys(raw_choice, CHOICE_KEYS, "choice", help_path)
             value = _text(raw_choice, "value", help_path)
             if "\0" in value or value in seen_values:
                 raise GuiError(f"{help_path}: invalid duplicate choice {value!r}")
@@ -472,6 +517,7 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         title=heading.group(1).strip(),
         summary=_text(metadata, "summary", help_path),
         platform=platform,
+        privilege=privilege,
         path=script_path,
         markdown=markdown,
         parameters=tuple(parameters),
@@ -1539,7 +1585,8 @@ class ScriptsApp(App[None]):
         self.catalog_query: str | None = None
         self.search_text = {
             script.script_id: (
-                f"{script.script_id} {script.title} {script.summary} {script.platform}"
+                f"{script.script_id} {script.title} {script.summary} "
+                f"{script.platform} {script.privilege}"
             ).casefold()
             for script in scripts
         }
@@ -1672,7 +1719,7 @@ class ScriptsApp(App[None]):
         for script in visible:
             ready = script.supported and script.launchable
             state = Text(
-                "●" if ready else "◆" if not script.launchable else "○",
+                "Ready" if ready else "Docs" if not script.launchable else "Other OS",
                 style=(
                     "green"
                     if ready
@@ -1721,7 +1768,8 @@ class ScriptsApp(App[None]):
             else f"Available on {script.platform}"
         )
         self.query_one("#help", Markdown).update(
-            f"> **{badge}** · `{script.script_id}`\n\n{script.markdown}"
+            f"> **{badge}** · {PRIVILEGE_LABELS[script.privilege]} · "
+            f"`{script.script_id}`\n\n{script.markdown}"
         )
         self.update_controls()
 
@@ -2111,6 +2159,21 @@ def _is_command(path: Path) -> bool:
 
 
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
+    from unittest.mock import patch
+
+    def layout_snapshot(app: ScriptsApp) -> dict[str, tuple[int, int, int, int]]:
+        snapshot = {}
+        for selector in (
+            "#hero",
+            "#toolbar",
+            "#catalog-panel",
+            "#details-tabs",
+            "#help",
+        ):
+            region = app.query_one(selector).region
+            snapshot[selector] = (region.x, region.y, region.width, region.height)
+        return snapshot
+
     expected = {"linux", "macos", "windows"}
     assert cancel_allowed("Preview") and not cancel_allowed("Apply")
     assert quit_allowed("Apply", False) and not quit_allowed("Apply", True)
@@ -2158,6 +2221,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         metadata = {
             "summary": "Exercise typed parameters.",
             "platform": "any",
+            "privilege": "user",
             "applyFlag": "--apply",
             "yesFlag": "--yes",
             "applyWhen": ["fix"],
@@ -2185,14 +2249,17 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             ],
         }
         help_path = script_path.with_name("probe.py.man")
-        help_path.write_text(
-            f"---\n{json.dumps(metadata)}\n---\n"
+        probe_markdown = (
             "# Probe\n\n`action`, `--query`, `--apply`, and `--yes` exercise "
-            "typed parameters.\n",
+            "typed parameters.\n"
+        )
+        help_path.write_text(
+            f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
             encoding="utf-8",
         )
         probe = parse_help(help_path, contract_root)
         assert probe.parameters[0].default == "show"
+        assert probe.privilege == "user"
         assert probe.parameters[1].flag == "--query"
         assert not probe.launchable
         assert not probe.needs_apply(("show",))
@@ -2203,12 +2270,38 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             probe.parameters[1].when,
             {"action": "show"},
         )
+        metadata["privlege"] = metadata.pop("privilege")
+        help_path.write_text(
+            f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
+            encoding="utf-8",
+        )
+        try:
+            parse_help(help_path, contract_root)
+        except GuiError as error:
+            assert "unknown metadata key(s): privlege" in str(error)
+        else:
+            raise AssertionError("unknown manual metadata was accepted")
 
     run_root = root.parent
-    compact = ScriptsApp(root, scripts, working_directory=run_root)
+    with patch.dict(os.environ, {"NO_COLOR": "1"}):
+        compact = ScriptsApp(root, scripts, working_directory=run_root)
+    assert compact.no_color
     async with compact.run_test(size=(50, 18)) as pilot:
         await pilot.pause()
-        assert compact.screen.has_class("-compact")
+        assert compact.screen.classes == {"-compact", "-short"}
+        assert layout_snapshot(compact) == {
+            "#hero": (0, 0, 0, 0),
+            "#toolbar": (1, 1, 48, 7),
+            "#catalog-panel": (1, 8, 48, 4),
+            "#details-tabs": (1, 13, 48, 4),
+            "#help": (2, 15, 46, 2),
+        }
+        fallback_tree = compact.query_one("#repo-tree", FilteredDirectoryTree)
+        assert (
+            fallback_tree.ICON_FILE,
+            fallback_tree.ICON_NODE,
+            fallback_tree.ICON_NODE_EXPANDED,
+        ) == ("📄 ", "📁 ", "📂 ")
         table = compact.query_one("#scripts", DataTable)
         assert table.row_count == len(scripts)
         details = compact.query_one("#details-tabs", TabbedContent).region
@@ -2226,16 +2319,25 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         runnable = next(
             script for script in scripts if script.supported and script.launchable
         )
+        other_os = next(
+            script for script in scripts if not script.supported and script.launchable
+        )
+        assert table.get_row(runnable.script_id)[0].plain == "Ready"
+        assert table.get_row(dashboard.script_id)[0].plain == "Docs"
+        assert table.get_row(other_os.script_id)[0].plain == "Other OS"
         compact.show_script(runnable)
         await pilot.press("/")
         assert compact.focused is compact.query_one("#script-filter", Input)
-        assert await pilot.click("#files-button")
+        await pilot.press("f1")
+        assert compact.query_one("#details-tabs", TabbedContent).active == "help-pane"
+        await pilot.press("f3")
         assert compact.query_one("#details-tabs", TabbedContent).active == "files-pane"
+        assert compact.focused is compact.query_one("#file-filter", Input)
         selected_id = compact.selected.script_id if compact.selected else ""
-        compact.action_sort()
+        await pilot.press("f5")
         assert table.cursor_coordinate.row == table.get_row_index(selected_id)
 
-        compact.action_run()
+        await pilot.press("f2")
         await pilot.pause()
         assert isinstance(compact.screen, RunWizard)
         assert compact.screen.query_one("#cwd", Input).value == str(run_root)
@@ -2267,11 +2369,34 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         )
         await pilot.press("escape")
         await pilot.pause()
+        confirmed: list[bool] = []
+        compact.push_screen(ConfirmApply("echo safe"), confirmed.append)
+        await pilot.pause()
+        confirmation = compact.screen.query_one("#confirmation", Input)
+        confirmation.focus()
+        await pilot.press("C", "L", "E", "A", "N")
+        assert not compact.screen.query_one("#confirm-apply", Button).disabled
+        await pilot.press("enter")
+        await pilot.pause()
+        assert confirmed == [True]
 
-    wide = ScriptsApp(root, scripts)
+    wide = ScriptsApp(root, scripts, nerd_fonts=True)
     async with wide.run_test(size=(140, 40)) as pilot:
         await pilot.pause()
-        assert wide.screen.has_class("-wide")
+        assert wide.screen.classes == {"-tall", "-wide"}
+        assert layout_snapshot(wide) == {
+            "#hero": (1, 1, 138, 5),
+            "#toolbar": (1, 6, 138, 4),
+            "#catalog-panel": (1, 10, 57, 29),
+            "#details-tabs": (59, 10, 80, 29),
+            "#help": (60, 12, 78, 27),
+        }
+        nerd_tree = wide.query_one("#repo-tree", FilteredDirectoryTree)
+        assert (
+            nerd_tree.ICON_FILE,
+            nerd_tree.ICON_NODE,
+            nerd_tree.ICON_NODE_EXPANDED,
+        ) == ("󰈔 ", "󰉋 ", "󰝰 ")
         with tempfile.TemporaryDirectory(prefix="scripts-gui-test-") as directory:
             test_root = Path(directory)
             probe = test_root / "long-line.py"
@@ -2281,6 +2406,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                 "Long output",
                 "Exercise bounded output streaming.",
                 "any",
+                "user",
                 probe,
                 "# Long output",
                 (),
@@ -2299,7 +2425,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             )
             assert result.exit_code == 0 and not result.cancelled
 
-    print(f"ok: {len(scripts)} scripts, compact and wide layouts")
+    print(f"ok: {len(scripts)} scripts, layout snapshots, keyboard, and fallbacks")
 
 
 def parse_args(arguments: list[str]) -> argparse.Namespace:
@@ -2327,7 +2453,7 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="validate manual contracts and render compact and wide layouts",
+        help="validate manuals, layout snapshots, keyboard, and fallbacks",
     )
     return parser.parse_args(arguments)
 

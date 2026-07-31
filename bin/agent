@@ -60,19 +60,23 @@ def registry() -> dict[str, AgentSpec]:
     home = Path.home()
     codex = Path(os.environ.get("CODEX_HOME", home / ".codex"))
     claude = Path(os.environ.get("CLAUDE_CONFIG_DIR", home / ".claude"))
-    gemini = home / ".gemini"
+    gemini = (Path(os.environ.get("GEMINI_CLI_HOME") or home) / ".gemini").expanduser()
     copilot = Path(os.environ.get("COPILOT_HOME", home / ".copilot"))
-    qwen = home / ".qwen"
+    qwen = Path(os.environ.get("QWEN_HOME") or home / ".qwen").expanduser()
     opencode = _xdg("XDG_DATA_HOME", home / ".local/share") / "opencode"
-    kilo = home / ".kilocode"
+    if os.name == "nt":
+        kilo = Path(os.environ.get("LOCALAPPDATA", home / "AppData/Local")) / "kilo"
+    elif sys.platform == "darwin":
+        kilo = home / "Library/Application Support/kilo"
+    else:
+        kilo = _xdg("XDG_DATA_HOME", home / ".local/share") / "kilo"
     cline = Path(os.environ.get("CLINE_DATA_DIR", home / ".cline/data"))
     if goose_override := os.environ.get("GOOSE_PATH_ROOT"):
-        goose = Path(goose_override)
-    elif sys.platform == "darwin":
-        goose = home / "Library/Application Support/Block/goose"
+        goose = Path(goose_override).expanduser()
     elif os.name == "nt":
         goose = (
-            Path(os.environ.get("APPDATA", home / "AppData/Roaming")) / "Block/goose"
+            Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
+            / "Block/goose/data"
         )
     else:
         goose = _xdg("XDG_DATA_HOME", home / ".local/share") / "goose"
@@ -80,6 +84,12 @@ def registry() -> dict[str, AgentSpec]:
     amp = _xdg("XDG_CONFIG_HOME", home / ".config") / "amp"
     kiro = Path(os.environ.get("KIRO_HOME", home / ".kiro"))
     pi_agent = Path(os.environ.get("PI_CODING_AGENT_DIR", home / ".pi/agent"))
+    if pi_session_dir := os.environ.get("PI_CODING_AGENT_SESSION_DIR"):
+        pi_root = Path(pi_session_dir).expanduser()
+        pi_sessions = ("**/*.jsonl",)
+    else:
+        pi_root = pi_agent
+        pi_sessions = ("sessions/**/*.jsonl",)
     agents = [
         AgentSpec(
             "codex",
@@ -153,7 +163,11 @@ def registry() -> dict[str, AgentSpec]:
             ("cache",),
             ("settings.json",),
             "restart Qwen Code",
-            "Automatic conversation and memory cleanup is not verified.",
+            (
+                "Use `qwen sessions list --json` and interactive `/delete`, "
+                "`/forget`, or `/memory`; QWEN_RUNTIME_DIR stays outside "
+                "automatic cleanup."
+            ),
         ),
         AgentSpec(
             "opencode",
@@ -174,12 +188,13 @@ def registry() -> dict[str, AgentSpec]:
             ("kilo",),
             kilo,
             "kilo",
-            home / ".kilocode/skills",
+            home / ".kilo/skills",
             (),
             (),
             (),
             (),
             "run /reload or start a new session",
+            "Cloud Agent sessions are outside local cleanup.",
         ),
         AgentSpec(
             "cline",
@@ -222,7 +237,7 @@ def registry() -> dict[str, AgentSpec]:
             _xdg("XDG_CONFIG_HOME", home / ".config") / "goose/skills",
             (),
             (),
-            ("cache", "data/logs"),
+            ("logs",) if os.name == "nt" else (),
             ("config/config.yaml",),
             "restart goose",
             "Use `goose session list/remove`; its managed database is never removed.",
@@ -287,15 +302,26 @@ def registry() -> dict[str, AgentSpec]:
             home / ".openhands",
             "openhands",
             home / ".openhands/skills",
+            ("conversations/*",),
+            (),
+            (),
+            (),
+            "restart OpenHands",
+            "OpenHands Cloud conversations are outside local cleanup.",
         ),
         AgentSpec(
             "pi",
             "Pi coding agent",
             ("pi",),
-            pi_agent,
+            pi_root,
             "pi",
             pi_agent / "skills",
+            pi_sessions,
             (),
+            (),
+            (),
+            "start a new Pi session",
+            "Cleanup removes local JSONL sessions without following symlinks.",
         ),
         AgentSpec(
             "rovodev",
@@ -342,6 +368,28 @@ def _read_json_lines(text: str) -> list[dict[str, object]]:
     return [value] if isinstance(value, dict) else []
 
 
+def _session_delete_steps(
+    label: str,
+    binary: str,
+    text: str,
+    delete_prefix: tuple[str, ...],
+) -> list[Step]:
+    session_ids = {
+        session_id
+        for record in _read_json_lines(text)
+        if isinstance((session_id := record.get("id") or record.get("sessionID")), str)
+        and 0 < len(session_id) <= 256
+        and all(character.isprintable() for character in session_id)
+    }
+    return [
+        Step(
+            f"Delete {label} session {session_id}",
+            (binary, *delete_prefix, session_id),
+        )
+        for session_id in sorted(session_ids)
+    ]
+
+
 def _codex_session_ids(root: Path) -> list[str]:
     session_ids: set[str] = set()
     for path in safe_targets(
@@ -362,7 +410,7 @@ def _native_cleanup_unavailable(spec: AgentSpec, kind: str) -> bool:
         return bool(_codex_session_ids(spec.root))
     if spec.key == "claude-code":
         return kind == "all" and spec.root.exists()
-    return spec.key in {"gemini-cli", "opencode"} and spec.root.exists()
+    return spec.key in {"gemini-cli", "opencode", "kilo"} and spec.root.exists()
 
 
 def _native_clean_steps(spec: AgentSpec, kind: str) -> list[Step]:
@@ -415,31 +463,62 @@ def _native_clean_steps(spec: AgentSpec, kind: str) -> list[Step]:
             "use `gemini --delete-session INDEX_OR_ID` for selected sessions."
         )
         return []
-    if spec.key == "opencode":
+    if spec.key in {"opencode", "kilo"}:
+        if spec.key == "opencode":
+            list_command = (binary, "session", "list", "--format", "json")
+            label = "OpenCode"
+        else:
+            list_command = (
+                binary,
+                "session",
+                "list",
+                "--all",
+                "--format",
+                "json",
+            )
+            label = "Kilo"
         result = run(
-            (binary, "session", "list", "--format", "json"),
+            list_command,
             capture=True,
             check=False,
             timeout=20,
         )
         if result.returncode:
             warning(
-                f"OpenCode session listing exited {result.returncode}; "
-                "no OpenCode deletion was planned."
+                f"{label} session listing exited {result.returncode}; "
+                f"no {label} deletion was planned."
             )
             return []
-        steps: list[Step] = []
-        for record in _read_json_lines(result.stdout or ""):
-            session_id = record.get("id") or record.get("sessionID")
-            if isinstance(session_id, str):
-                steps.append(
-                    Step(
-                        f"Delete OpenCode session {session_id}",
-                        (binary, "session", "delete", session_id),
-                    )
-                )
-        return steps
+        return _session_delete_steps(
+            label,
+            binary,
+            result.stdout or "",
+            ("session", "delete"),
+        )
     return []
+
+
+def _target_usage(targets: list[Path]) -> tuple[int, int]:
+    roots: list[Path] = []
+    for target in sorted(set(targets), key=lambda path: (len(path.parts), str(path))):
+        if not any(root == target or root in target.parents for root in roots):
+            roots.append(target)
+
+    items = total_bytes = 0
+    pending = roots[:]
+    while pending:
+        path = pending.pop()
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        items += 1
+        if stat.S_ISDIR(metadata.st_mode):
+            with os.scandir(path) as entries:
+                pending.extend(Path(entry.path) for entry in entries)
+        else:
+            total_bytes += metadata.st_size
+    return items, total_bytes
 
 
 def clean(args: argparse.Namespace) -> int:
@@ -476,6 +555,12 @@ def clean(args: argparse.Namespace) -> int:
     if not targets and not steps:
         print("No safely automatable local state was found.")
         return 1 if blocked else 0
+    items, total_bytes = _target_usage(targets)
+    print(
+        f"Plan: {items} local item(s) ({total_bytes:,} bytes) across "
+        f"{len(targets)} target(s); {len(steps)} native operation(s) "
+        "(size unavailable)."
+    )
     warning("Close every selected agent before applying this plan.")
     if not confirmed(
         apply=args.apply,
@@ -505,11 +590,23 @@ def _config_error(path: Path) -> str | None:
     return None
 
 
+def _existing_state_paths(spec: AgentSpec) -> tuple[Path, ...]:
+    return tuple(
+        dict.fromkeys(
+            path
+            for path in (spec.root, spec.skill_dir)
+            if path is not None and path.exists()
+        )
+    )
+
+
 def doctor(args: argparse.Namespace) -> int:
     if args.list_agents:
+        print(f"{'AGENT':<16} {'STATUS':<18} {'MARKET':<12} NAME")
         for spec in registry().values():
             status = color("installed", "32") if spec.binary else color("missing", "2")
-            print(f"{spec.key:<16} {status:<18} {spec.label}")
+            market = "skills" if spec.skill_agent else "unsupported"
+            print(f"{spec.key:<16} {status:<18} {market:<12} {spec.label}")
         return 0
 
     fixes: list[tuple[str, Path]] = []
@@ -518,7 +615,13 @@ def doctor(args: argparse.Namespace) -> int:
         heading(spec.label)
         binary = spec.binary
         if binary is None:
-            print(color("○ not installed", "2"))
+            remaining = _existing_state_paths(spec)
+            if remaining:
+                print(color("! executable missing; local state remains", "33"))
+                for path in remaining:
+                    print(f"  {path}")
+            else:
+                print(color("○ not installed", "2"))
             continue
         print(color(f"✓ executable: {binary}", "32"))
         version = run((binary, "--version"), capture=True, check=False, timeout=10)
@@ -529,9 +632,13 @@ def doctor(args: argparse.Namespace) -> int:
         elif output:
             print(f"  {output[0][:200]}")
 
-        if spec.key == "codex":
+        native_command = {
+            "codex": (binary, "doctor", "--json"),
+            "kilo": (binary, "config", "check"),
+        }.get(spec.key)
+        if native_command:
             native_doctor = run(
-                (binary, "doctor", "--json"),
+                native_command,
                 capture=True,
                 check=False,
                 timeout=30,
@@ -558,7 +665,7 @@ def doctor(args: argparse.Namespace) -> int:
                     print(color(f"! permissions are {mode:03o}; recommend 700", "33"))
                     fixes.append(("Restrict state-directory permissions", spec.root))
         else:
-            print(color(f"○ no state root yet: {spec.root}", "2"))
+            print(color(f"○ installed but not initialized: {spec.root}", "2"))
 
         for relative in spec.configs:
             path = spec.root / relative
@@ -583,10 +690,7 @@ def doctor(args: argparse.Namespace) -> int:
         if spec.skill_dir is None:
             print("  no native Agent Skills target")
         elif not spec.skill_dir.exists():
-            print(
-                f"  skill directory will be created on first install: {spec.skill_dir}"
-            )
-            fixes.append(("Create skill directory", spec.skill_dir))
+            print(f"  no skills installed yet: {spec.skill_dir}")
         if spec.note:
             print(f"  note: {spec.note}")
 
@@ -599,10 +703,8 @@ def doctor(args: argparse.Namespace) -> int:
             yes=args.yes,
             prompt=f"apply {len(fixes)} agent repairs",
         ):
-            for label, path in fixes:
-                if label.startswith("Create"):
-                    path.mkdir(parents=True, exist_ok=True)
-                elif os.name != "nt":
+            for _, path in fixes:
+                if os.name != "nt":
                     path.chmod(0o700)
             print(color("Repairs applied.", "1;32"))
     elif fixes:
@@ -656,6 +758,11 @@ def market(args: argparse.Namespace) -> int:
 
 
 def self_test() -> int:
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
     agents = registry()
     assert {"codex", "claude-code", "gemini-cli", "github-copilot"} <= agents.keys()
     assert agents["codex"].sessions == ("history.jsonl",)
@@ -670,8 +777,6 @@ def self_test() -> int:
         "cursor",
         "kiro-cli",
         "droid",
-        "openhands",
-        "pi",
         "rovodev",
     ):
         assert not agents[key].sessions
@@ -681,9 +786,23 @@ def self_test() -> int:
         for spec in agents.values()
         for pattern in (*spec.sessions, *spec.memories)
     )
+    assert agents["aider"].skill_agent is None
+    assert all(
+        spec.skill_agent is not None for key, spec in agents.items() if key != "aider"
+    )
     assert _read_json_lines('{"id":"one"}\n{"id":"two"}') == [
         {"id": "one"},
         {"id": "two"},
+    ]
+    deletion_steps = _session_delete_steps(
+        "Fixture",
+        "fixture",
+        '[{"id":"two"},{"sessionID":"one"},{"id":3},{"id":"two"}]',
+        ("session", "delete"),
+    )
+    assert [step.command for step in deletion_steps] == [
+        ("fixture", "session", "delete", "one"),
+        ("fixture", "session", "delete", "two"),
     ]
     try:
         run(
@@ -700,6 +819,20 @@ def self_test() -> int:
         outside = Path(temporary) / "outside"
         root.mkdir()
         outside.mkdir()
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_CLI_HOME": str(Path(temporary) / "gemini-home"),
+                "QWEN_HOME": str(Path(temporary) / "qwen-home"),
+                "PI_CODING_AGENT_SESSION_DIR": str(Path(temporary) / "pi-sessions"),
+            },
+        ):
+            overridden = registry()
+        assert overridden["gemini-cli"].root == (
+            Path(temporary) / "gemini-home/.gemini"
+        )
+        assert overridden["qwen-code"].root == Path(temporary) / "qwen-home"
+        assert overridden["pi"].root == Path(temporary) / "pi-sessions"
         session_id = "12345678-1234-5678-9234-567812345678"
         session_dir = root / "sessions/2026/07/27"
         session_dir.mkdir(parents=True)
@@ -721,6 +854,89 @@ def self_test() -> int:
             None,
         )
         assert _native_cleanup_unavailable(missing_codex, "sessions")
+        kilo = AgentSpec("kilo", "Kilo", (sys.executable,), root, None, None)
+        with patch(
+            f"{__name__}.run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout='[{"id":"kilo-session"}]',
+            ),
+        ) as listed:
+            kilo_steps = _native_clean_steps(kilo, "sessions")
+        listed.assert_called_once_with(
+            (
+                sys.executable,
+                "session",
+                "list",
+                "--all",
+                "--format",
+                "json",
+            ),
+            capture=True,
+            check=False,
+            timeout=20,
+        )
+        assert kilo_steps[0].command == (
+            sys.executable,
+            "session",
+            "delete",
+            "kilo-session",
+        )
+        usage = root / "cache"
+        nested = usage / "nested"
+        nested.mkdir(parents=True)
+        (usage / "one").write_bytes(b"123")
+        nested_file = nested / "two"
+        nested_file.write_bytes(b"45")
+        assert _target_usage([usage, nested_file]) == (4, 5)
+        partial = AgentSpec(
+            "fixture",
+            "Fixture",
+            ("scripts-test-missing-agent-cli",),
+            root,
+            None,
+            None,
+        )
+        assert _existing_state_paths(partial) == (root,)
+        doctor_args = argparse.Namespace(
+            list_agents=False,
+            agent="fixture",
+            fix=False,
+            apply=False,
+            yes=False,
+        )
+        output = StringIO()
+        with (
+            patch(f"{__name__}.choose_agents", return_value=[partial]),
+            patch(f"{__name__}.find_program", return_value=None),
+            redirect_stdout(output),
+        ):
+            assert doctor(doctor_args) == 0
+        assert "executable missing; local state remains" in output.getvalue()
+        fresh = AgentSpec(
+            "fixture",
+            "Fixture",
+            ("fixture",),
+            Path(temporary) / "fresh",
+            None,
+            None,
+        )
+        output = StringIO()
+        with (
+            patch(f"{__name__}.choose_agents", return_value=[fresh]),
+            patch(f"{__name__}.find_program", return_value="fixture"),
+            patch(
+                f"{__name__}.run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout="fixture 1.0\n",
+                    stderr="",
+                ),
+            ),
+            redirect_stdout(output),
+        ):
+            assert doctor(doctor_args) == 0
+        assert "installed but not initialized" in output.getvalue()
         (outside / "session").touch()
         try:
             (root / "linked").symlink_to(outside, target_is_directory=True)

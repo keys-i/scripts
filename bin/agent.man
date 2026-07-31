@@ -2,6 +2,7 @@
 {
   "summary": "Clean local agent state, diagnose installations, and search indexed compatible skills.",
   "platform": "any",
+  "privilege": "user",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["clean", "--fix", "--install"],
@@ -84,6 +85,11 @@
   ],
   "options": [
     {
+      "flag": "--list-agents",
+      "label": "List supported agent identifiers",
+      "when": {"action": ["doctor"]}
+    },
+    {
       "flag": "--fix",
       "label": "Repair safe doctor findings",
       "when": {"action": ["doctor"]}
@@ -116,10 +122,13 @@ private skill.
 ### `doctor`
 
 Finds installed executables, runs version checks, validates JSON/TOML settings,
-checks state-directory permissions, and locates the agent's skill directory.
+checks state-directory permissions, locates the agent's skill directory, and
+distinguishes a missing executable with leftover state from an installed client
+that has not initialized its state root.
 YAML, YAML-derived, and JSONC files are reported as **not parsed**, not as
-validated. Select `--fix` to preview owner-only permission repairs and missing
-skill directories; applying does not install agents or rewrite their settings.
+validated. Select `--fix` to preview owner-only permission repairs. Missing
+skill directories are normal and remain the responsibility of the selected
+market installer; applying does not install agents or rewrite their settings.
 
 ### `clean`
 
@@ -128,23 +137,39 @@ Only documented local state is targeted. Credentials, API keys, configuration,
 skills, plugins, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, and equivalent
 project-authored instructions are excluded.
 
-Codex and OpenCode conversations are enumerated and deleted with native
+Every preview reports the number of local entries and their logical byte size
+without following symlinks. Native vendor operations are counted separately
+because their reclaimable size is unavailable before deletion.
+
+Codex, OpenCode, and Kilo conversations are enumerated and deleted with native
 non-interactive commands. Codex's documented global `history.jsonl` is also
-removed for session cleanup. Gemini's native listing is shown, then deletion
-is handed off to `gemini --delete-session INDEX_OR_ID` because its
-human-readable listing is not a stable machine interface. Claude's native
-purge combines conversations, auto-memory, and related project state, so it is
-available only through `clean all`; that explicit operation previews every
-project recorded by Claude before applying. Aider's documented history files
-remain current-project scoped.
+removed for session cleanup. OpenHands conversation directories and Pi JSONL
+sessions use their documented local deletion contracts. Gemini's native
+listing is shown, then deletion is handed off to
+`gemini --delete-session INDEX_OR_ID` because its human-readable listing is not
+a stable machine interface. Claude's native purge combines conversations,
+auto-memory, and related project state, so it is available only through
+`clean all`; that explicit operation previews every project recorded by Claude
+before applying. Aider's documented history files remain current-project
+scoped.
 
 Managed Copilot, goose, and Cline session databases are never deleted. Use
-Copilot's `/session` UI, `goose session list/remove`, or `cline history`
-instead. Other clients without a verified, separable conversation store have
-no automatic session target.
+Copilot's `/session delete`, `/session delete-all`, or `/session prune` UI,
+`goose session` commands, or `cline history` instead. Qwen's native session
+listing and interactive memory commands remain manual because it has no
+documented noninteractive delete-all contract. Other clients without a
+verified, separable conversation store have no automatic session target.
 
-Close affected agents before applying. Copilot and Amp can sync state to a
-service; local cleanup does not delete remote copies.
+Close affected agents before applying.
+
+### Authority boundary
+
+Direct path removal is local only. Native vendor commands run without remote
+flags and keep their documented local CLI scope. The command does not access or
+delete provider-account, cloud, synchronized, Hub, IDE, or retention records;
+Copilot, Amp, Kilo Cloud, Cline Hub, OpenHands Cloud, and Factory Cloud Sync may
+retain separate copies. Gemini session listing is current-project scoped.
+`market` is the only workflow that intentionally uses the network.
 
 ### `market`
 
@@ -161,6 +186,8 @@ agent doctor --agent codex --fix
 agent clean sessions --agent gemini-cli
 agent clean all --agent claude-code
 agent clean all --agent codex --apply
+agent clean sessions --agent kilo
+agent clean sessions --agent pi
 agent market "Python security"
 agent market --install vercel-labs/agent-skills --skill find-skills --agent codex
 ```
