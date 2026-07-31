@@ -102,3 +102,30 @@ and include:
 A pull request is ready only when its scripts run successfully, its comments
 and help text are current, and the diff contains no secrets or unrelated files.
 All contributions must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Rollback and Recovery
+
+`main` is the release. If a merged pull request breaks it:
+
+1. Use the pull request's **Revert** action to open a rollback PR. If GitHub
+   cannot revert cleanly, branch from `origin/main` and run
+   `git revert -m 1 <merge-commit>`.
+2. Let the Checks and Quality workflows pass, merge the rollback, then verify
+   the streamed launcher:
+
+   ```sh
+   curl -fsSL https://github.com/keys-i/scripts/raw/refs/heads/main/run.sh |
+     bash -s -- list
+   ```
+
+3. Fix forward in a separate PR. Never force-push or rewrite `main`.
+
+Until the rollback lands, pin both the launcher and archive to one known-good
+commit:
+
+```sh
+SHA=<40-character-known-good-commit>
+curl -fsSL "https://raw.githubusercontent.com/keys-i/scripts/$SHA/run.sh" |
+  SCRIPTS_ARCHIVE_URL="https://github.com/keys-i/scripts/archive/$SHA.tar.gz" \
+  bash -s -- list
+```

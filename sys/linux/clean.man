@@ -2,6 +2,7 @@
 {
   "summary": "Clean package, desktop, browser, and temporary caches.",
   "platform": "linux",
+  "privilege": "mixed",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "options": [

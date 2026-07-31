@@ -2,6 +2,7 @@
 {
   "summary": "Audit host and project security, correlate findings with CVEs and CISA KEV, and diagnose scanner readiness.",
   "platform": "any",
+  "privilege": "user",
   "findingExitCodes": [1],
   "parameters": [
     {
@@ -125,7 +126,9 @@ Known Exploited Vulnerabilities catalog when a finding contains a CVE ID.
 
 With `--scope system`, inspect native update, malware-protection, disk
 encryption, firewall, application-trust, secure-boot, and mandatory-access
-control status where the host exposes them.
+control status where the host exposes them. Failed or unrecognized native
+probes remain unknown and retain their bounded diagnostics instead of becoming
+false findings.
 
 With `--scope project`, `--scanner auto` runs each installed supported scanner:
 OSV-Scanner v2 for dependency vulnerabilities, Trivy for filesystem

@@ -2,6 +2,7 @@
 {
   "summary": "Diagnose hardware and apply conservative native repairs without hiding platform tools.",
   "platform": "any",
+  "privilege": "mixed",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["fix"],
