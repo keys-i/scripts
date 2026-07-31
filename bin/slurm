@@ -25,13 +25,9 @@ from typing import Any
 from _common import ToolError, confirmed, heading, require_program
 
 DEFAULT_CLUSTER: dict[str, Any] = {
-    "partition": "gpu_cuda",
-    "gres": "gpu:a100:1",
     "nodes": 1,
-    "ntasks": 1,
+    "ntasks_per_node": 1,
     "cpus_per_task": 1,
-    "mem": "10G",
-    "time": "07:00:00",
 }
 CLUSTER_KEYS = {
     "account",
@@ -41,6 +37,7 @@ CLUSTER_KEYS = {
     "constraint",
     "nodes",
     "ntasks",
+    "ntasks_per_node",
     "cpus_per_task",
     "mem",
     "time",
@@ -97,6 +94,17 @@ def _string_list(value: object, label: str, *, allow_empty: bool = True) -> list
     return value
 
 
+def _words(value: object, label: str, *, allow_empty: bool = True) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = shlex.split(value)
+        except ValueError as error:
+            raise ToolError(
+                f"{label} is not valid shell-style text: {error}"
+            ) from error
+    return _string_list(value, label, allow_empty=allow_empty)
+
+
 def _check_keys(table: dict[str, Any], allowed: set[str], label: str) -> None:
     if unknown := sorted(table.keys() - allowed):
         raise ToolError(f"unknown {label} key(s): {', '.join(unknown)}")
@@ -115,43 +123,23 @@ def _positive_int(value: object, label: str) -> int:
     return value
 
 
-def _detect_account() -> str:
-    result = subprocess.run(
-        ("groups",),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return next(
-        (group for group in result.stdout.split() if group.startswith("a_")), ""
-    )
-
-
 def _cluster(raw: object) -> dict[str, Any]:
     supplied = _table(raw, "cluster")
     _check_keys(supplied, CLUSTER_KEYS, "cluster")
     cluster = {**DEFAULT_CLUSTER, **supplied}
-    gres = str(cluster.get("gres", ""))
-    if "qos" not in cluster:
-        cluster["qos"] = (
-            "mig" if "nvidia_a100_80gb_pcie" in gres else ("gpu" if gres else "")
-        )
-    if "constraint" not in cluster:
-        if "nvidia_a100_80gb_pcie" in gres:
-            cluster["constraint"] = "cuda10gb"
-        elif "a100" in gres.lower() or "h100" in gres.lower():
-            cluster["constraint"] = "cuda80gb"
-        elif "l40" in gres.lower():
-            cluster["constraint"] = "cuda48gb"
-    cluster["account"] = str(cluster.get("account") or _detect_account())
-    if not cluster["account"]:
-        raise ToolError(
-            "cluster.account is required when no a_* Unix group is detected"
-        )
-    for key in ("nodes", "ntasks", "cpus_per_task"):
-        cluster[key] = _positive_int(cluster[key], f"cluster.{key}")
+    for key in ("nodes", "ntasks", "ntasks_per_node", "cpus_per_task"):
+        if key in cluster:
+            cluster[key] = _positive_int(cluster[key], f"cluster.{key}")
     for key, value in cluster.items():
-        if key not in {"nodes", "ntasks", "cpus_per_task"} and value not in {None, ""}:
+        if key not in {
+            "nodes",
+            "ntasks",
+            "ntasks_per_node",
+            "cpus_per_task",
+        } and value not in {
+            None,
+            "",
+        }:
             cluster[key] = _directive(value, f"cluster.{key}")
     return cluster
 
@@ -164,9 +152,8 @@ def _environment(raw: object) -> dict[str, Any]:
     result: dict[str, Any] = {
         "modules": _string_list(environment.get("modules", []), "environment.modules"),
         "launcher": _string_list(
-            environment.get("launcher", ["srun", "--ntasks=1"]),
+            environment.get("launcher", ["srun"]),
             "environment.launcher",
-            allow_empty=False,
         ),
         "check_gpu": bool(environment.get("check_gpu", True)),
     }
@@ -239,18 +226,19 @@ def expand_config(data: dict[str, Any], source: Path, limit: int) -> list[JobRun
         raise ToolError("at least one [[jobs]] table is required")
 
     runs: list[JobRun] = []
+    used_names: set[str] = set()
     for job_number, raw_job in enumerate(jobs, 1):
         job = _table(raw_job, f"jobs[{job_number}]")
         _check_keys(job, JOB_KEYS, f"jobs[{job_number}]")
-        name = job.get("name")
+        name = job.get("name", f"job-{job_number}")
         if not isinstance(name, str) or not name.strip():
-            raise ToolError(f"jobs[{job_number}].name is required")
-        command = _string_list(
+            raise ToolError(f"jobs[{job_number}].name must not be empty")
+        command = _words(
             job.get("command"),
             f"jobs[{job_number}].command",
             allow_empty=False,
         )
-        prepare = _string_list(
+        prepare = _words(
             job.get("prepare", []),
             f"jobs[{job_number}].prepare",
         )
@@ -265,10 +253,12 @@ def expand_config(data: dict[str, Any], source: Path, limit: int) -> list[JobRun
             if Path(workdir_value).is_absolute()
             else source.parent / workdir_value
         ).resolve()
+        if not workdir.is_dir():
+            raise ToolError(f"jobs[{job_number}].workdir does not exist: {workdir}")
         if "prepare_once" in job and not isinstance(job["prepare_once"], bool):
             raise ToolError(f"jobs[{job_number}].prepare_once must be true or false")
         matrix_keys, combinations = _matrix(job.get("matrix"))
-        configs = _config_paths(job.get("configs"), source.parent)
+        configs = _config_paths(job.get("configs"), workdir)
         for config_path, combination in itertools.product(configs, combinations):
             values = {
                 key: str(value)
@@ -283,8 +273,16 @@ def expand_config(data: dict[str, Any], source: Path, limit: int) -> list[JobRun
             )
             labels = [Path(config_path).stem] if config_path else []
             labels.extend(f"{key}-{values[key]}" for key in matrix_keys)
-            run_name = SAFE_NAME.sub("-", "-".join((name, *labels))).strip("-._")
-            run_name = f"{run_name}-{len(runs) + 1:03d}"[:100]
+            base_name = SAFE_NAME.sub("-", "-".join((name, *labels))).strip("-._")
+            if not base_name:
+                raise ToolError(f"jobs[{job_number}].name has no usable characters")
+            run_name = base_name[:100]
+            duplicate = 2
+            while run_name in used_names:
+                suffix = f"-{duplicate}"
+                run_name = f"{base_name[: 100 - len(suffix)]}{suffix}"
+                duplicate += 1
+            used_names.add(run_name)
             runs.append(
                 JobRun(
                     name=run_name,
@@ -325,23 +323,29 @@ def render_script(run_spec: JobRun) -> str:
     environment = run_spec.environment
     directives: list[tuple[str, object]] = [
         ("job-name", run_spec.name),
-        ("partition", cluster["partition"]),
         ("nodes", cluster["nodes"]),
-        ("ntasks", cluster["ntasks"]),
+        ("ntasks-per-node", cluster["ntasks_per_node"]),
         ("cpus-per-task", cluster["cpus_per_task"]),
-        ("mem", cluster["mem"]),
-        ("time", cluster["time"]),
-        ("account", cluster["account"]),
-        ("output", "logs/%x-%j.out"),
-        ("error", "logs/%x-%j.err"),
-        ("export", "NONE"),
     ]
-    if cluster.get("qos"):
-        directives.append(("qos", cluster["qos"]))
-    if cluster.get("gres"):
-        directives.append(("gres", cluster["gres"]))
-    if cluster.get("constraint"):
-        directives.append(("constraint", cluster["constraint"]))
+    for key, directive in (
+        ("ntasks", "ntasks"),
+        ("partition", "partition"),
+        ("account", "account"),
+        ("qos", "qos"),
+        ("gres", "gres"),
+        ("constraint", "constraint"),
+        ("mem", "mem"),
+        ("time", "time"),
+    ):
+        if cluster.get(key):
+            directives.append((directive, cluster[key]))
+    directives.extend(
+        (
+            ("output", f"{run_spec.name}.out"),
+            ("error", f"{run_spec.name}.err"),
+            ("export", "NONE"),
+        )
+    )
 
     lines = ["#!/bin/bash --login"]
     lines.extend(f"#SBATCH --{key}={value}" for key, value in directives)
@@ -350,7 +354,6 @@ def render_script(run_spec: JobRun) -> str:
             "",
             "set -euo pipefail",
             f"WORKDIR={shlex.quote(str(run_spec.workdir))}",
-            'mkdir -p "$WORKDIR/logs"',
             'cd "$WORKDIR"',
             "",
             'echo "host: $(hostname)"',
@@ -395,20 +398,22 @@ def render_script(run_spec: JobRun) -> str:
                 f'[[ "$(realpath "$CONDA_PREFIX")" == {shlex.quote(str(Path(conda_env).resolve()))} ]] || {{ echo \'Wrong Conda environment active\' >&2; exit 1; }}',
             ]
         )
-    scratch = environment.get(
-        "scratch_base",
-        f"/scratch/user/{os.environ.get('USER', 'user')}",
-    )
+    if scratch := environment.get("scratch_base"):
+        lines.extend(
+            [
+                "",
+                f"SCRATCH_BASE={shlex.quote(scratch)}",
+                'export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$SCRATCH_BASE/.cache}"',
+                'export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$XDG_CACHE_HOME/pip}"',
+                'export HF_HOME="${HF_HOME:-$XDG_CACHE_HOME/huggingface}"',
+                'export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"',
+                'export MPLCONFIGDIR="${MPLCONFIGDIR:-$XDG_CACHE_HOME/matplotlib}"',
+                'mkdir -p "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$MPLCONFIGDIR"',
+            ]
+        )
     lines.extend(
         [
             "",
-            f"SCRATCH_BASE={shlex.quote(scratch)}",
-            'export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$SCRATCH_BASE/.cache}"',
-            'export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$XDG_CACHE_HOME/pip}"',
-            'export HF_HOME="${HF_HOME:-$XDG_CACHE_HOME/huggingface}"',
-            'export TORCH_HOME="${TORCH_HOME:-$XDG_CACHE_HOME/torch}"',
-            'export MPLCONFIGDIR="${MPLCONFIGDIR:-$XDG_CACHE_HOME/matplotlib}"',
-            'mkdir -p "$XDG_CACHE_HOME" "$PIP_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$MPLCONFIGDIR"',
             'export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"',
             'export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"',
             "export PYTHONUNBUFFERED=1",
@@ -417,14 +422,9 @@ def render_script(run_spec: JobRun) -> str:
     )
     for name, value in environment["variables"].items():
         lines.append(f"export {name}={shlex.quote(str(value))}")
-    lines.extend(
-        [
-            "",
-            'echo "workdir: $WORKDIR"',
-            'echo "python: $(command -v python || true)"',
-            'echo "cache: $XDG_CACHE_HOME"',
-        ]
-    )
+    lines.extend(["", 'echo "workdir: $WORKDIR"'])
+    if scratch:
+        lines.append('echo "cache: $XDG_CACHE_HOME"')
     if environment["check_gpu"] and cluster.get("gres"):
         lines.extend(["", "nvidia-smi || { echo 'GPU check failed' >&2; exit 1; }"])
 
@@ -481,6 +481,7 @@ def show_plan(runs: list[JobRun], *, as_json: bool) -> None:
         )
         return
     heading(f"Slurm plan · {len(runs)} job(s)")
+    print(f"{'#':>4}  {'JOB':<42} COMMAND")
     for number, run_spec in enumerate(runs, 1):
         print(f"{number:>4}  {run_spec.name:<42} {shlex.join(run_spec.command)}")
 
@@ -496,6 +497,13 @@ def write_scripts(runs: list[JobRun], output: Path) -> list[Path]:
     output.mkdir(parents=True, exist_ok=True)
     paths = output_paths(runs, output)
     for path, run_spec in zip(paths, runs, strict=True):
+        rendered = render_script(run_spec)
+        if path.is_symlink():
+            raise ToolError(f"refusing to reuse symbolic-link output: {path}")
+        if path.is_file() and path.read_bytes() == rendered.encode():
+            if os.name != "nt":
+                path.chmod(0o700)
+            continue
         try:
             script = path.open("x", encoding="utf-8", newline="\n")
         except FileExistsError as error:
@@ -503,14 +511,15 @@ def write_scripts(runs: list[JobRun], output: Path) -> list[Path]:
         with script:
             if os.name != "nt":
                 os.fchmod(script.fileno(), 0o700)
-            script.write(render_script(run_spec))
+            script.write(rendered)
     return paths
 
 
 def mutate(args: argparse.Namespace, runs: list[JobRun]) -> int:
     output = args.output.resolve()
     paths = output_paths(runs, output)
-    heading(f"{args.action.title()} preview")
+    show_plan(runs, as_json=False)
+    heading(f"{args.action.title()} files")
     for path in paths:
         print(path)
     if not args.apply:
@@ -526,26 +535,34 @@ def mutate(args: argparse.Namespace, runs: list[JobRun]) -> int:
     sbatch = require_program("sbatch") if args.action == "submit" else None
     paths = write_scripts(runs, output)
     if args.action == "render":
-        print(f"Rendered {len(paths)} scripts in {output}")
+        print(f"Ready: {len(paths)} scripts in {output}")
         return 0
     assert sbatch is not None
-    for path, run_spec in zip(paths, runs, strict=True):
-        (run_spec.workdir / "logs").mkdir(parents=True, exist_ok=True)
+    for number, (path, run_spec) in enumerate(zip(paths, runs, strict=True), 1):
+        print(f"Submitting {number}/{len(paths)}: {run_spec.name}", flush=True)
         subprocess.run((sbatch, str(path)), cwd=run_spec.workdir, check=True)
+    print(f"Submitted {len(paths)} job(s).")
     return 0
 
 
 def self_test() -> int:
     config: dict[str, Any] = {
-        "cluster": {"account": "a_test"},
-        "environment": {"check_gpu": False},
+        "cluster": {
+            "account": "a_test",
+            "partition": "a100",
+            "gres": "gpu:a100",
+            "nodes": 1,
+            "ntasks_per_node": 1,
+            "cpus_per_task": 1,
+        },
+        "environment": {"check_gpu": False, "launcher": []},
         "jobs": [
             {
                 "name": "flowids",
                 "branch": "m0",
-                "prepare": ["python", "prepare.py"],
+                "prepare": "python prepare.py",
                 "prepare_once": True,
-                "command": ["python", "-m", "src.main", "--seed", "{seed}"],
+                "command": "python -m src.main --seed {seed}",
                 "matrix": {"seed": [1, 2], "model": ["small", "large"]},
             }
         ],
@@ -554,28 +571,97 @@ def self_test() -> int:
     assert len(runs) == 4
     assert runs[0].command[-1] == "1"
     rendered = render_script(runs[0])
+    assert runs[0].name == "flowids-seed-1-model-small"
+    assert "#SBATCH --job-name=flowids-seed-1-model-small" in rendered
+    assert "#SBATCH --ntasks-per-node=1" in rendered
+    assert "#SBATCH --partition=a100" in rendered
+    assert "#SBATCH --gres=gpu:a100" in rendered
+    assert "#SBATCH --output=flowids-seed-1-model-small.out" in rendered
+    assert "#SBATCH --error=flowids-seed-1-model-small.err" in rendered
+    assert "logs/" not in rendered
     assert "git checkout" not in rendered
     assert "EXPECTED_BRANCH=m0" in rendered
     assert 'touch "$PREPARE_MARKER"' in rendered
     with TemporaryDirectory() as temporary:
+        temporary_path = Path(temporary)
+        portable_runs = expand_config(
+            {
+                "environment": {"launcher": []},
+                "jobs": [
+                    {
+                        "name": "t0",
+                        "command": ["bash", "-lc", "g++ app.cpp -o app && ./app"],
+                    },
+                    {"name": "t0", "command": ["./app"]},
+                ],
+            },
+            temporary_path / "slurm.toml",
+            10,
+        )
+        assert [run.name for run in portable_runs] == ["t0", "t0-2"]
+        portable_script = render_script(portable_runs[0])
+        assert "#SBATCH --job-name=t0" in portable_script
+        assert "#SBATCH --output=t0.out" in portable_script
+        assert "#SBATCH --error=t0.err" in portable_script
+        assert "#SBATCH --partition" not in portable_script
+        assert "#SBATCH --gres" not in portable_script
+        assert "#SBATCH --account" not in portable_script
+        assert "bash -lc 'g++ app.cpp -o app && ./app'" in portable_script
+        workdir = temporary_path / "project"
+        (workdir / "configs").mkdir(parents=True)
+        config_path = workdir / "configs" / "small.toml"
+        config_path.touch()
+        simple_runs = expand_config(
+            {
+                "cluster": {"account": "a_test"},
+                "environment": {"check_gpu": False},
+                "jobs": [
+                    {
+                        "workdir": "project",
+                        "configs": ["configs/*.toml"],
+                        "command": "python train.py --config {config}",
+                    }
+                ],
+            },
+            temporary_path / "slurm.toml",
+            10,
+        )
+        assert simple_runs[0].name == "job-1-small"
+        assert simple_runs[0].command[-1] == str(config_path.resolve())
+        try:
+            expand_config(
+                {"jobs": [{"workdir": "missing", "command": "true"}]},
+                temporary_path / "slurm.toml",
+                10,
+            )
+        except ToolError as error:
+            assert "workdir does not exist" in str(error)
+        else:
+            raise AssertionError("missing workdir was accepted")
+        output = temporary_path / "build"
         arguments = argparse.Namespace(
             action="render",
-            output=Path(temporary),
+            output=output,
             apply=True,
             yes=True,
         )
         assert mutate(arguments, runs[:1]) == 0
-        scripts = list(Path(temporary).glob("*.sbatch"))
+        scripts = list(output.glob("*.sbatch"))
         assert len(scripts) == 1
         if os.name != "nt":
+            scripts[0].chmod(0o644)
+        assert mutate(arguments, runs[:1]) == 0
+        if os.name != "nt":
             assert scripts[0].stat().st_mode & 0o777 == 0o700
+        scripts[0].write_text("different\n", encoding="utf-8")
         try:
-            write_scripts(runs[:1], Path(temporary))
+            write_scripts(runs[:1], output)
         except ToolError:
             pass
         else:
             raise AssertionError("existing Slurm output was overwritten")
-    print("ok: TOML matrix expansion, branch guard, and batch rendering")
+    assert parse_args(["plan", "jobs.toml"]).config_path == Path("jobs.toml")
+    print("ok: practical TOML, matrix expansion, branch guard, and safe rendering")
     return 0
 
 
@@ -590,7 +676,8 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
         choices=("plan", "render", "submit"),
         default="plan",
     )
-    parser.add_argument("--config", type=Path, default=Path("slurm.toml"))
+    parser.add_argument("config_path", nargs="?", type=Path, metavar="CONFIG")
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, default=Path("slurm-build"))
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--json", action="store_true")
@@ -607,7 +694,10 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         if args.limit < 1:
             raise ToolError("--limit must be positive")
-        runs = read_runs(args.config, args.limit)
+        if args.config and args.config_path:
+            raise ToolError("use CONFIG or --config, not both")
+        config_path = args.config or args.config_path or Path("slurm.toml")
+        runs = read_runs(config_path, args.limit)
         if args.action == "plan":
             show_plan(runs, as_json=args.json)
             return 0

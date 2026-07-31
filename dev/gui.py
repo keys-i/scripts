@@ -1518,10 +1518,12 @@ class ScriptsApp(App[None]):
         scripts: tuple[ScriptSpec, ...],
         *,
         nerd_fonts: bool = False,
+        working_directory: Path | None = None,
     ) -> None:
         super().__init__()
         self.register_theme(SCRIPT_DECK_THEME)
         self.root = root
+        self.working_directory = working_directory or root
         self.scripts = scripts
         self.nerd_fonts = nerd_fonts
         self.selected: ScriptSpec | None = None
@@ -1845,7 +1847,7 @@ class ScriptsApp(App[None]):
         ):
             return
         self.push_screen(
-            RunWizard(self.selected, self.root, self.nerd_fonts),
+            RunWizard(self.selected, self.working_directory, self.nerd_fonts),
             self.start_selection,
         )
 
@@ -2202,7 +2204,8 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             {"action": "show"},
         )
 
-    compact = ScriptsApp(root, scripts)
+    run_root = root.parent
+    compact = ScriptsApp(root, scripts, working_directory=run_root)
     async with compact.run_test(size=(50, 18)) as pilot:
         await pilot.pause()
         assert compact.screen.has_class("-compact")
@@ -2235,6 +2238,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         compact.action_run()
         await pilot.pause()
         assert isinstance(compact.screen, RunWizard)
+        assert compact.screen.query_one("#cwd", Input).value == str(run_root)
         assert await pilot.click("#wizard-next")
         wizard = compact.screen
         assert isinstance(wizard, RunWizard) and wizard.step == 1
@@ -2331,6 +2335,7 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
 def main(arguments: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if arguments is None else arguments)
     try:
+        working_directory = Path.cwd().resolve()
         with repository_root(args.root) as root:
             scripts = load_catalog(root)
             if args.self_test:
@@ -2347,6 +2352,7 @@ def main(arguments: list[str] | None = None) -> int:
                 root,
                 scripts,
                 nerd_fonts=args.nerd_fonts,
+                working_directory=working_directory,
             ).run(inline=inline)
             return 0
     except GuiError as error:

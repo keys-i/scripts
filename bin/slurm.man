@@ -1,7 +1,7 @@
 ---
 {
-  "summary": "Plan, render, and submit many Slurm jobs from one validated TOML matrix.",
-  "platform": "linux",
+  "summary": "Plan, render, and submit Slurm jobs from a small validated TOML file.",
+  "platform": "any",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["render", "submit"],
@@ -23,7 +23,7 @@
       "flag": "--config",
       "required": true,
       "default": "slurm.toml",
-      "placeholder": "docs/examples/slurm.toml"
+      "placeholder": "examples/slurm.toml"
     },
     {
       "name": "output",
@@ -53,13 +53,12 @@
 }
 ---
 
-# Slurm matrix builder
+# Slurm job builder
 
-One TOML file expands into multiple jobs, config files, branches, and
-hyperparameter combinations. The launcher exposes it only on Linux because
-generated jobs target Bash and Slurm. Direct `plan` and `render` need Python
-3.11 and `uv` but no Slurm installation; only `submit` needs `sbatch`. Generated
-jobs may also require the configured `git`, module, Conda, GPU, `srun`, and
+Start with one job and add config files or matrix values only when needed.
+`plan` and `render` work on every supported OS; only `submit` needs `sbatch`.
+Generated jobs target Bash and Slurm.
+Generated jobs may also need configured module, Conda, GPU, `srun`, `git`, or
 `flock` tools. Choose the `action` in the dashboard or as the first positional
 argument.
 
@@ -67,81 +66,80 @@ argument.
 > submission. Do not put secrets in TOML variables because they are written
 > into those scripts.
 
-The generated scripts keep the useful safety checks from the former Bunya
-submission script: account and GPU defaults, clean Conda activation, scratch
-caches, GPU checks, one-time locked preparation, and a branch guard. Jobs
-verify the requested branch but never run `git checkout`, so parallel
-submissions cannot race over one worktree.
+Generated scripts keep the useful safety checks from the former Bunya script:
+optional Conda activation and scratch caches, GPU checks, one-time locked
+preparation, and a branch guard. Jobs verify a requested branch but never run
+`git checkout`, so parallel submissions cannot race over one worktree.
 
 ## TOML layout
 
+The smallest useful file is:
+
 ```toml
-[cluster]
-account = "a_research"
-partition = "gpu_cuda"
-qos = "gpu"
-gres = "gpu:a100:1"
-constraint = "cuda80gb"
-cpus_per_task = 4
-mem = "32G"
-time = "08:00:00"
-
-[environment]
-modules = ["miniforge/26.1.0-0"]
-conda_env = "/scratch/user/alice/conda/envs/flowIDS"
-scratch_base = "/scratch/user/{user}"
-check_gpu = true
-launcher = ["srun", "--ntasks=1"]
-
-[environment.variables]
-TOKENIZERS_PARALLELISM = "false"
-
 [[jobs]]
-name = "flowids"
-branch = "m0"
-workdir = "../flowIDS"
-configs = ["configs/*.toml"]
-prepare = ["python", "scripts/get_dataset.py"]
-prepare_once = true
-command = [
-  "python", "-m", "src.main",
-  "--config", "{config}",
-  "--seed", "{seed}",
-  "--learning-rate", "{learning_rate}"
-]
-
-[jobs.matrix]
-seed = [1, 2, 3]
-learning_rate = [0.001, 0.0001]
+command = "python train.py"
 ```
 
-Each config is combined with every matrix value. Placeholders supported in
-`command` and `prepare` are `{config}`, `{branch}`, `{workdir}`, and every
-matrix key. Add more `[[jobs]]` tables for unrelated commands or branches.
-The default `--limit 1000` catches accidental explosions before submission.
-With `prepare_once = true`, a lock and success marker derived from the prepare
-command let only the first job prepare shared input. Remove the matching
-`.slurm-prepare-*.done` marker from the work directory to prepare it again.
+`name` defaults to `job-1`, `workdir` defaults to the TOML directory and must
+already exist, and a job with no expansion keeps its exact name. Expanded jobs
+append config and matrix labels, while collisions receive a numeric suffix.
+Every job writes `<job-name>.out` and `<job-name>.err`.
 
-If `[cluster].account` is omitted, an `a_*` Unix group is used. Bunya defaults
-select `gpu_cuda`, one A100, `gpu`, and `cuda80gb`; explicitly set cluster
-values for other sites or CPU jobs. `environment.conda_env` must be absolute.
-Rendered files are private to the current user (`0700`). Existing output files
+Commands may be shell-style strings or arrays of argument strings. Strings are
+split into arguments without invoking a shell. Arrays run Python, compiled
+C++, or any other executable without reinterpretation:
+
+```toml
+command = ["./simulation", "--threads", "4"]
+```
+
+Use an explicit shell only when shell syntax is required:
+
+```toml
+command = ["bash", "-lc", "make && ./simulation | tee result.txt"]
+```
+
+Each `configs` glob is resolved from `workdir` and combined with every matrix
+value. Placeholders supported in `command` and `prepare` are `{config}`,
+`{branch}`, `{workdir}`, and every matrix key. Add more `[[jobs]]` tables for
+unrelated commands. The default `--limit 1000` catches accidental expansions
+before submission. With `prepare_once = true`, a lock and success marker
+derived from the prepare command lets only the first job prepare shared input.
+Remove the matching `.slurm-prepare-*.done` marker to prepare again.
+
+`[cluster]` accepts `account`, `partition`, `qos`, `gres`, `constraint`,
+`nodes`, `ntasks`, `ntasks_per_node`, `cpus_per_task`, `mem`, and `time`.
+Only `nodes`, `ntasks_per_node`, and `cpus_per_task` default to `1`; omitted
+site-specific fields are left to Slurm.
+
+`[environment]` accepts `modules`, `conda_env`, `scratch_base`, `check_gpu`,
+`launcher`, and a nested `variables` table. The launcher defaults to `["srun"]`
+and may be `[]` to run commands directly. Conda and scratch setup are emitted
+only when configured. `environment.conda_env` must be absolute.
+
+Each job accepts `name`, `branch`, `workdir`, `command`, `prepare`,
+`prepare_once`, `configs`, and `matrix`. The complete
+[`examples/slurm.toml`](../examples/slurm.toml) shows every property plus
+Python, C++, and shell commands. Rendered files are private to the current user
+(`0700`). Repeating an identical render safely reuses its files; changed files
 are never overwritten.
 
 ## Direct CLI
 
 ```sh
-slurm plan --config docs/examples/slurm.toml
+slurm plan examples/slurm.toml
 slurm plan --config slurm.toml --json
-slurm render --config slurm.toml --output slurm-build
-slurm render --config slurm.toml --output slurm-build --apply
-slurm submit --config slurm.toml --apply
+slurm render slurm.toml
+slurm render slurm.toml --output slurm-build --apply
+slurm submit slurm.toml --apply
 ```
 
-`render` and `submit` preview the exact files first. Direct applies require
-typing `APPLY`; the shared TUI confirms with `CLEAN` and then supplies
-`--apply --yes`.
+`CONFIG` is optional and defaults to `slurm.toml`; `--config` remains available
+for scripts. `plan` prints every expanded command. `render` and `submit` print
+the same plan and exact output paths before doing anything. Direct applies
+require typing `APPLY`; the shared TUI confirms with `CLEAN` and then supplies
+`--apply --yes`. Submission reports progress and stops on the first failed
+`sbatch`.
 
 ## Exit status
 

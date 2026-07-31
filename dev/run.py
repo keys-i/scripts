@@ -69,9 +69,7 @@ def catalog(root: Path) -> list[dict[str, object]]:
         if script.is_symlink() or not script.is_file():
             raise LauncherError(f"unsafe or missing script for {help_path}")
         script_id = script.relative_to(root).as_posix()
-        alias = (
-            script.stem if script.suffix.lower() in SCRIPT_SUFFIXES else script.name
-        )
+        alias = script.stem if script.suffix.lower() in SCRIPT_SUFFIXES else script.name
         entries.append(
             {
                 "id": script_id,
@@ -110,6 +108,10 @@ def resolve(
     if exact:
         return exact[0]
     aliases = [entry for entry in usable if entry["alias"] == name]
+    if not runnable and len(aliases) > 1:
+        local = [entry for entry in aliases if entry["platform"] in {"any", platform}]
+        if len(local) == 1:
+            return local[0]
     if len(aliases) == 1:
         return aliases[0]
     if len(aliases) > 1:
@@ -161,7 +163,9 @@ def launch(entry: dict[str, object], arguments: list[str]) -> None:
     else:
         with script.open(encoding="utf-8", errors="replace") as handle:
             first_line = handle.readline()
-        if "uv run" in first_line or suffix == ".py":
+        if "uv run" in first_line and (uv := shutil.which("uv")):
+            command = [uv, "run", "--no-project", "--script", str(script)]
+        elif "uv run" in first_line or suffix == ".py":
             command = [sys.executable, str(script)]
         else:
             command = [str(script)]
@@ -174,7 +178,9 @@ def show_manual(entry: dict[str, object]) -> int:
     marker = text.find("\n---\n", 4)
     body = text[marker + 5 :].lstrip()
     if glow := shutil.which("glow"):
-        return subprocess.run((glow, "-"), input=body, text=True, check=False).returncode
+        return subprocess.run(
+            (glow, "-"), input=body, text=True, check=False
+        ).returncode
     print(body, end="" if body.endswith("\n") else "\n")
     return 0
 
@@ -191,6 +197,9 @@ def self_test(root: Path, entries: list[dict[str, object]]) -> None:
         assert compatible(entries, platform)
         assert resolve(entries, platform, "security-audit")["platform"] == "any"
         assert resolve(entries, platform, "clean")["platform"] == platform
+        assert (
+            resolve(entries, platform, "clean", runnable=False)["platform"] == platform
+        )
     assert all(entry["id"] != "dev/gui.py" for entry in compatible(entries, host_os()))
     assert resolve(entries, host_os(), "run.sh", runnable=False)["id"] == "run.sh"
     print(f"ok: {len(entries)} documented scripts and three OS catalogs")
@@ -218,9 +227,7 @@ def main(arguments: list[str]) -> int:
         if arguments[0] == "man":
             if len(arguments) != 2:
                 raise LauncherError("usage: ./run.sh man SCRIPT")
-            return show_manual(
-                resolve(entries, platform, arguments[1], runnable=False)
-            )
+            return show_manual(resolve(entries, platform, arguments[1], runnable=False))
         if arguments[0] == "list":
             raise LauncherError("list does not accept arguments")
         launch(resolve(entries, platform, arguments[0]), arguments[1:])

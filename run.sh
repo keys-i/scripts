@@ -10,7 +10,9 @@ cleanup() {
 }
 
 run_launcher() {
-    if [ ! -t 0 ] && [ -r /dev/tty ] && (: </dev/tty) 2>/dev/null; then
+    if [ -n "$workspace" ] && [ ! -t 0 ] && [ -r /dev/tty ] &&
+        (: </dev/tty) 2>/dev/null
+    then
         "$@" </dev/tty
     else
         "$@"
@@ -27,9 +29,15 @@ case "$launcher_path" in
     *) launcher_path=./$launcher_path ;;
 esac
 
+script_root=
 if [ -f "$launcher_path" ]; then
-    script_root=$(CDPATH= cd -- "$(dirname -- "$launcher_path")" && pwd -P)
-else
+    candidate=$(CDPATH= cd -- "$(dirname -- "$launcher_path")" && pwd -P)
+    if [ -f "$candidate/dev/run.py" ]; then
+        script_root=$candidate
+    fi
+fi
+
+if [ -z "$script_root" ]; then
     for tool in curl tar; do
         command -v "$tool" >/dev/null 2>&1 || {
             echo "run.sh: $tool is required for streamed use" >&2
@@ -58,7 +66,7 @@ for python in python3 python; do
 done
 
 if command -v uv >/dev/null 2>&1; then
-    run_launcher uv run --python 3.11 "$script_root/dev/run.py" "$@"
+    run_launcher uv run --no-project --python 3.11 "$script_root/dev/run.py" "$@"
     exit $?
 fi
 
