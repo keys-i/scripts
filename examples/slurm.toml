@@ -1,0 +1,51 @@
+# Complete reference: remove fields you do not need and replace site-specific
+# account, module, path, partition, GPU, QoS, and constraint values.
+[cluster]
+account = "a_yourgroup"
+partition = "a100"
+qos = "gpu"
+gres = "gpu:a100"
+constraint = "cuda80gb"
+nodes = 1
+ntasks = 1
+ntasks_per_node = 1
+cpus_per_task = 1
+mem = "16G"
+time = "01:00:00"
+
+[environment]
+modules = ["gcc", "miniforge/26.1.0-0"]
+conda_env = "/scratch/user/yourname/conda/envs/flowIDS"
+scratch_base = "/scratch/user/{user}"
+check_gpu = true
+launcher = ["srun"]
+
+[environment.variables]
+OMP_NUM_THREADS = 1
+TOKENIZERS_PARALLELISM = "false"
+
+# A plain Python command. With no configs or matrix, its exact Slurm name is t0
+# and its logs are t0.out and t0.err.
+[[jobs]]
+name = "t0"
+workdir = "."
+command = "python train.py --epochs 10"
+
+# Compile C++, then run one job for every matching config/thread combination.
+[[jobs]]
+name = "cpp-simulation"
+branch = "main"
+workdir = "."
+configs = ["*.toml"]
+prepare = ["g++", "-O3", "-o", "simulation", "simulation.cpp"]
+prepare_once = true
+command = ["./simulation", "--config", "{config}", "--threads", "{threads}"]
+
+[jobs.matrix]
+threads = [1, 4]
+
+# Pipelines, redirects, substitutions, and multiple shell commands are explicit.
+[[jobs]]
+name = "shell-pipeline"
+workdir = "."
+command = ["bash", "-lc", "python prepare.py && ./simulation | tee result.txt"]

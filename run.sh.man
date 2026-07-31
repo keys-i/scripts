@@ -9,41 +9,62 @@
 # OS-aware script launcher
 
 `run.sh` reads the adjacent `.man` contracts under `bin`, `dev`, and `sys`; it
-does not maintain a second script list.
+does not maintain a second script list. Run it from a checkout or stream it
+without installing this repository.
 
 > **Behavior:** The launcher detects Linux, macOS, or Windows internally,
 > hides incompatible and non-launchable commands, passes arguments unchanged,
-> and never uses `eval`.
+> and never uses `eval`. Streamed runs use a temporary source archive and
+> remove it when the selected command exits.
 
-The launcher needs Python 3. Commands whose shebang declares `uv` also need
-`uv`, so their inline dependency contracts remain isolated and reproducible.
+The launcher uses Python 3.11 or newer. If it is unavailable, an existing `uv`
+can supply Python. `curl` and `tar` are also needed for streamed runs.
 
 ## Usage
 
 ```sh
 ./run.sh --help
 ./run.sh list
+./run.sh man disk
 ./run.sh security-audit audit --scope system
 ./run.sh disk health
 ./run.sh clean
 ./run.sh --self-test
 ```
 
+With no arguments, the responsive dashboard opens when `uv` and a terminal are
+available; otherwise the compatible script list is printed.
+
 Use a listed short name or its repository-relative path. Remaining arguments
 are passed unchanged to that command. Ambiguous names, traversal, malformed
 manual metadata, symlinks, unsupported platforms, and incompatible scripts are
 rejected.
 
+`man SCRIPT` renders the adjacent manual with Glow when installed, or prints
+plain Markdown. Manuals for other operating systems remain viewable.
+
 `./run.sh --self-test` validates all three operating-system catalogs without
 running their commands.
 
-## Remote manuals
+## Run without installing
 
-Fetch plain Markdown with `curl`, or pipe it to Glow for color:
+GitHub `/blob/` pages are HTML and cannot be piped to a shell. Use the raw
+endpoint:
+
+```sh
+RUN='https://github.com/keys-i/scripts/raw/refs/heads/main/run.sh'
+
+curl -fsSL "$RUN" | bash
+curl -fsSL "$RUN" | bash -s -- list
+curl -fsSL "$RUN" | bash -s -- man disk
+curl -fsSL "$RUN" | bash -s -- disk health
+```
+
+Manuals also remain directly readable from their raw source:
 
 ```sh
 curl -fsSL \
-  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man" |
+  https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man |
   glow -
 ```
 

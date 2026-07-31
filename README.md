@@ -8,105 +8,50 @@ here because they are useful, not because they need to become full projects.
 
 ## Using a Script
 
-The easiest way to use the collection is the interactive dashboard. It finds
-the right script, renders its manual, guides you through the available
-options, and streams the output:
+Run the collection without cloning or installing it:
 
 ```sh
-uv run --refresh "https://raw.githubusercontent.com/keys-i/scripts/main/dev/gui.py"
+curl -fsSL https://github.com/keys-i/scripts/raw/refs/heads/main/run.sh | bash
 ```
 
-The same command works in PowerShell. It needs
-[`uv`](https://docs.astral.sh/uv/getting-started/installation/), but it does not
-need a clone or a Python setup: `uv` runs the pinned dependencies in an isolated
-environment, and the dashboard removes its temporary repository copy when it
-closes.
+The `/blob/` URL is a web page and cannot be piped to a shell. The `/raw/`
+endpoint above downloads one temporary source archive, opens the responsive
+dashboard when `uv` and a terminal are available, and removes the archive when
+the selected command exits. Streamed use needs `curl`, `tar`, and either Python
+3.11+ or [`uv`](https://docs.astral.sh/uv/getting-started/installation/). On
+Windows, run it from Git Bash or WSL.
 
-The dashboard is full-screen by default. On macOS and Linux, add `--inline` to
-keep it below the prompt. Add `--nerd-fonts` when your terminal uses a Nerd
-Font. Use `/` to filter, `F1` for help, `F2` to run, `F3` for files, and `F5`
-to sort; every control also works with a mouse.
-
-The guided Python tools share that interface and remain useful directly:
+The same entry point lists scripts, renders any adjacent `.man` page, or runs a
+command directly:
 
 ```sh
-bin/agent doctor
-bin/disk health
-bin/cleaner git audit
-bin/hardware diagnose --area all
-bin/security-audit audit --scope all --target .
-bin/slurm plan --config slurm.toml
+RUN=https://github.com/keys-i/scripts/raw/refs/heads/main/run.sh
+curl -fsSL "$RUN" | bash -s -- list
+curl -fsSL "$RUN" | bash -s -- man disk
+curl -fsSL "$RUN" | bash -s -- disk health
+curl -fsSL "$RUN" | bash -s -- security-audit audit --scope system
+curl -fsSL "$RUN" | bash -s -- slurm plan slurm.toml
 ```
 
-From a local checkout, the OS-aware launcher lists only compatible commands
-and accepts the same arguments:
+`man SCRIPT` uses Glow when available and otherwise prints plain Markdown. The
+same manuals drive the dashboard, so there is no second help source to drift.
+From a local checkout, use the shorter equivalents:
 
 ```sh
+./run.sh
 ./run.sh list
-./run.sh security-audit audit --scope system
+./run.sh man disk
 ./run.sh clean
 ```
 
-They use the Python standard library and native operating-system commands.
-Read each adjacent `.man` page in the dashboard, or pass `--help` directly.
-The [agent research](docs/agent-tools.md) records supported clients and cleanup
-limits; the [security research](docs/security-research.md) explains scanner,
-CVE, KEV, and host-check coverage; the
-[Slurm example](docs/examples/slurm.toml) shows multi-job matrices.
+Cleanup scripts always preview first and require explicit confirmation before
+applying changes. The [agent research](docs/agent-tools.md) records supported
+clients and cleanup limits; the [security research](docs/security-research.md)
+explains scanner, CVE, KEV, and host-check coverage; the
+[Slurm example](examples/slurm.toml) shows every resource and command option.
 
-Every runnable command under `bin`, `dev`, and `sys` has one adjacent Markdown
-manual. Render it in color without running the command:
-
-```sh
-curl -fsSL \
-  "https://raw.githubusercontent.com/keys-i/scripts/main/bin/disk.man" |
-  glow -
-```
-
-[`glow`](https://github.com/charmbracelet/glow) hides the dashboard metadata
-and colors headings, callouts, tables, and code. Omit `| glow -` for portable
-plain Markdown. The dashboard applies the selected terminal theme to the same
-content, so there is no second help source to drift.
-
-Cleanup scripts always run a preview first. Applying repeats discovery with the
-same settings and requires typing `CLEAN`, so targets can change if the
-filesystem changes between the two runs.
-
-To run one script directly without cloning or keeping a local copy:
-
-```sh
-(
-  script='sys/linux/clean'
-  tmp=$(mktemp) || exit 1
-  trap 'rm -f "$tmp"' EXIT
-  curl -fsSL \
-    "https://raw.githubusercontent.com/keys-i/scripts/main/$script" \
-    -o "$tmp" &&
-    chmod +x "$tmp" &&
-    "$tmp" --help
-)
-```
-
-Change `script` to any path in this repository. The temporary file is removed
-when the command finishes, and its shebang selects the right interpreter.
-
-For PowerShell scripts:
-
-```powershell
-$script = 'sys/windows/clean.ps1'
-$temp = Join-Path ([IO.Path]::GetTempPath()) "$([guid]::NewGuid()).ps1"
-try {
-    Invoke-WebRequest -UseBasicParsing `
-        "https://raw.githubusercontent.com/keys-i/scripts/main/$script" `
-        -OutFile $temp
-    & $temp
-} finally {
-    Remove-Item $temp -Force -ErrorAction SilentlyContinue
-}
-```
-
-Remote execution still fetches code temporarily, but none of these examples
-leaves a repository or script behind. Review remote code before running it.
+Remote execution still runs mutable code from `main`; review it before use or
+replace `main` with a trusted commit SHA.
 
 > [!CAUTION]
 > Read system and cleanup scripts before running them. Use the least privilege
