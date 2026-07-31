@@ -2,6 +2,7 @@
 {
   "summary": "Plan, render, and submit Slurm jobs from a small validated TOML file.",
   "platform": "any",
+  "privilege": "scheduler",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["render", "submit"],

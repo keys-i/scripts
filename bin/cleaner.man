@@ -2,6 +2,7 @@
 {
   "summary": "Audit, garbage-collect, clean dangling Git objects, and rewrite history safely.",
   "platform": "any",
+  "privilege": "user",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["gc", "dangling", "rewrite"],

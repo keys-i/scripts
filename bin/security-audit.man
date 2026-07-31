@@ -2,6 +2,7 @@
 {
   "summary": "Audit host and project security, correlate findings with CVEs and CISA KEV, and diagnose scanner readiness.",
   "platform": "any",
+  "privilege": "user",
   "findingExitCodes": [1],
   "parameters": [
     {

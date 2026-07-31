@@ -2,6 +2,7 @@
 {
   "summary": "Inspect, health-check, recover, and repair disks on all three desktop operating systems.",
   "platform": "any",
+  "privilege": "mixed",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["recover", "fix"],

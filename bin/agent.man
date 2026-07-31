@@ -2,6 +2,7 @@
 {
   "summary": "Clean local agent state, diagnose installations, and search indexed compatible skills.",
   "platform": "any",
+  "privilege": "user",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "applyWhen": ["clean", "--fix", "--install"],
@@ -83,6 +84,11 @@
     }
   ],
   "options": [
+    {
+      "flag": "--list-agents",
+      "label": "List supported agent identifiers",
+      "when": {"action": ["doctor"]}
+    },
     {
       "flag": "--fix",
       "label": "Repair safe doctor findings",

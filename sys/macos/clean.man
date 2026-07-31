@@ -2,6 +2,7 @@
 {
   "summary": "Clean app, Xcode, Simulator, Homebrew, and temporary caches.",
   "platform": "macos",
+  "privilege": "user",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
   "options": [

@@ -19,7 +19,8 @@ endpoint above downloads one temporary source archive, opens the responsive
 dashboard when `uv` and a terminal are available, and removes the archive when
 the selected command exits. Streamed use needs `curl`, `tar`, and either Python
 3.11+ or [`uv`](https://docs.astral.sh/uv/getting-started/installation/). On
-Windows, run it from Git Bash or WSL.
+Windows, use Git Bash with native Windows Python or `uv`; WSL runs the Linux
+catalog instead.
 
 The same entry point lists scripts, renders any adjacent `.man` page, or runs a
 command directly:
@@ -27,6 +28,7 @@ command directly:
 ```sh
 RUN=https://github.com/keys-i/scripts/raw/refs/heads/main/run.sh
 curl -fsSL "$RUN" | bash -s -- list
+curl -fsSL "$RUN" | bash -s -- matrix
 curl -fsSL "$RUN" | bash -s -- man disk
 curl -fsSL "$RUN" | bash -s -- disk health
 curl -fsSL "$RUN" | bash -s -- security-audit audit --scope system
@@ -40,6 +42,7 @@ From a local checkout, use the shorter equivalents:
 ```sh
 ./run.sh
 ./run.sh list
+./run.sh matrix
 ./run.sh man disk
 ./run.sh clean
 ```

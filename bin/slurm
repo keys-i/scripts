@@ -661,7 +661,18 @@ def self_test() -> int:
         else:
             raise AssertionError("existing Slurm output was overwritten")
     assert parse_args(["plan", "jobs.toml"]).config_path == Path("jobs.toml")
-    print("ok: practical TOML, matrix expansion, branch guard, and safe rendering")
+    example = Path(__file__).resolve().parents[1] / "examples/slurm.toml"
+    example_runs = read_runs(example, 10)
+    assert [run.name for run in example_runs] == [
+        "t0",
+        "cpp-simulation-slurm-threads-1",
+        "cpp-simulation-slurm-threads-4",
+        "shell-pipeline",
+    ]
+    example_script = render_script(example_runs[0])
+    assert "#SBATCH --output=t0.out" in example_script
+    assert "#SBATCH --error=t0.err" in example_script
+    print("ok: stable names, complete example, branch guard, and safe rendering")
     return 0
 
 
