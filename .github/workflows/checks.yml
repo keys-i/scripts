@@ -136,9 +136,13 @@ jobs:
           python-version: "3.11"
           enable-cache: false
 
-      - name: Test launcher
+      - name: Test local and streamed launcher
         shell: bash
-        run: bash run.sh --self-test
+        env:
+          SCRIPTS_ARCHIVE_URL: https://github.com/${{ github.repository }}/archive/${{ github.sha }}.tar.gz
+        run: |
+          bash run.sh --self-test
+          bash -s -- --self-test < run.sh
 
       - name: Test dashboard
         if: hashFiles('dev/gui.py') != ''
