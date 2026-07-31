@@ -47,7 +47,7 @@
   "options": [
     {
       "flag": "--json",
-      "label": "Emit the plan as JSON",
+      "label": "Export the plan as JSON to standard output",
       "when": {"action": ["plan"]}
     }
   ]
@@ -130,13 +130,17 @@ are never overwritten.
 ```sh
 slurm plan examples/slurm.toml
 slurm plan --config slurm.toml --json
+slurm plan examples/slurm.toml > slurm-plan.txt
+slurm plan examples/slurm.toml --json > slurm-plan.json
 slurm render slurm.toml
 slurm render slurm.toml --output slurm-build --apply
 slurm submit slurm.toml --apply
 ```
 
 `CONFIG` is optional and defaults to `slurm.toml`; `--config` remains available
-for scripts. `plan` prints every expanded command. `render` and `submit` print
+for scripts. `plan` prints every expanded command. Redirect it to export a
+compact text summary; `--json` exports stable `name`, `workdir`, `branch`,
+`command`, and `values` fields for each expanded job. `render` and `submit` print
 the same plan and exact output paths before doing anything. Direct applies
 require typing `APPLY`; the shared TUI confirms with `CLEAN` and then supplies
 `--apply --yes`. Submission reports progress and stops on the first failed

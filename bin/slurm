@@ -546,6 +546,9 @@ def mutate(args: argparse.Namespace, runs: list[JobRun]) -> int:
 
 
 def self_test() -> int:
+    from contextlib import redirect_stdout
+    from io import StringIO
+
     config: dict[str, Any] = {
         "cluster": {
             "account": "a_test",
@@ -672,7 +675,13 @@ def self_test() -> int:
     example_script = render_script(example_runs[0])
     assert "#SBATCH --output=t0.out" in example_script
     assert "#SBATCH --error=t0.err" in example_script
-    print("ok: stable names, complete example, branch guard, and safe rendering")
+    exported = StringIO()
+    with redirect_stdout(exported):
+        show_plan(example_runs, as_json=True)
+    summary = json.loads(exported.getvalue())
+    assert [job["name"] for job in summary] == [run.name for run in example_runs]
+    assert set(summary[0]) == {"name", "workdir", "branch", "command", "values"}
+    print("ok: stable names, export contract, branch guard, and safe rendering")
     return 0
 
 
