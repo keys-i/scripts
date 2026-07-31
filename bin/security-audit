@@ -354,6 +354,16 @@ def _contains_state(
     return None
 
 
+def _selinux_status(result: ProcessResult) -> tuple[bool | None, str]:
+    state = result.output.strip().casefold()
+    details = f"SELinux: {_clean_text(result.output)}" if result.output.strip() else ""
+    if result.returncode != 0:
+        return None, details
+    return {"enforcing": True, "permissive": False, "disabled": False}.get(
+        state
+    ), details
+
+
 def linux_posture(timeout: int, max_bytes: int) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -462,9 +472,7 @@ def linux_posture(timeout: int, max_bytes: int) -> list[Finding]:
     mandatory_details = ""
     if getenforce := find_program("getenforce"):
         result = _probe((getenforce,), timeout, max_bytes)
-        state = result.output.strip().casefold()
-        mandatory_access = True if state == "enforcing" else False if state else None
-        mandatory_details = f"SELinux: {_clean_text(state)}" if state else ""
+        mandatory_access, mandatory_details = _selinux_status(result)
     elif apparmor := find_program("aa-enabled", "aa-status"):
         command = (
             (apparmor,)
@@ -1811,6 +1819,10 @@ def audit(args: argparse.Namespace) -> tuple[Path | None, list[Finding]]:
 
 
 def self_test() -> int:
+    assert _selinux_status(ProcessResult(0, "Enforcing\n"))[0] is True
+    assert _selinux_status(ProcessResult(0, "Permissive\n"))[0] is False
+    failed_selinux = _selinux_status(ProcessResult(1, "permission denied\n"))
+    assert failed_selinux == (None, "SELinux: permission denied")
     sarif = {
         "version": "2.1.0",
         "runs": [

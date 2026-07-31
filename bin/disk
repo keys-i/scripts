@@ -58,7 +58,8 @@ def _windows_target(target: str | None) -> tuple[str, str] | None:
 
 def show(args: argparse.Namespace, platform: str) -> int:
     target = args.target or args.target_pos
-    heading("Disk inventory")
+    if not args.json:
+        heading("Disk inventory")
     if platform == "linux":
         command = [
             require_program("lsblk"),
@@ -70,7 +71,7 @@ def show(args: argparse.Namespace, platform: str) -> int:
             command.append("--json")
         if target:
             command.append(target)
-        return run(command, check=False).returncode
+        return run(command, check=False, announce=not args.json).returncode
     if platform == "macos":
         diskutil = require_program("diskutil")
         command = [diskutil, "info" if target else "list"]
@@ -78,9 +79,16 @@ def show(args: argparse.Namespace, platform: str) -> int:
             command.append("-plist")
         if target:
             command.append(target)
-        result = run(command, capture=args.json, check=False)
+        result = run(
+            command,
+            capture=args.json,
+            check=False,
+            announce=not args.json,
+        )
         if args.json and result.returncode == 0 and result.stdout:
             print_json(plistlib.loads(result.stdout.encode()))
+        elif args.json and (detail := result.stderr or result.stdout):
+            print(detail.rstrip(), file=sys.stderr)
         return result.returncode
     if platform == "windows":
         selected = _windows_target(target)
@@ -113,7 +121,7 @@ def show(args: argparse.Namespace, platform: str) -> int:
                 else "$d|Format-Table -AutoSize;$v|Format-Table -AutoSize"
             )
         )
-        return run(ps(script), check=False).returncode
+        return run(ps(script), check=False, announce=not args.json).returncode
     raise ToolError(f"unsupported operating system: {platform}")
 
 
@@ -121,7 +129,7 @@ def health(args: argparse.Namespace, platform: str) -> int:
     target = args.target or args.target_pos
     heading("Disk health")
     if platform == "linux":
-        run(
+        inventory_status = run(
             (
                 require_program("lsblk"),
                 "-d",
@@ -129,7 +137,9 @@ def health(args: argparse.Namespace, platform: str) -> int:
                 "NAME,PATH,SIZE,MODEL,SERIAL,TRAN,ROTA,STATE",
             ),
             check=False,
-        )
+        ).returncode
+        if inventory_status:
+            return inventory_status
         smartctl = find_program("smartctl")
         if smartctl and target:
             return run(elevated((smartctl, "-H", "-A", target)), check=False).returncode
@@ -138,7 +148,7 @@ def health(args: argparse.Namespace, platform: str) -> int:
             return run(elevated((smartctl, "--scan-open")), check=False).returncode
         warning("Install smartmontools for SMART/NVMe health details.")
         if find_program("nvme"):
-            run(("nvme", "list"), check=False)
+            return run(("nvme", "list"), check=False).returncode
         return 0
     if platform == "macos":
         diskutil = require_program("diskutil")
@@ -397,6 +407,10 @@ def recover(args: argparse.Namespace, platform: str) -> int:
 
 
 def self_test() -> int:
+    import json
+    from contextlib import redirect_stderr, redirect_stdout
+    from io import StringIO
+    from types import SimpleNamespace
     from unittest.mock import patch
 
     if find_program("diskutil"):
@@ -416,6 +430,65 @@ def self_test() -> int:
     assert recovery_tool("macos", None) == "mount"
     assert recovery_tool("windows", None) == "testdisk"
     assert parse_args(["recover"]).tool is None
+    inventory_args = argparse.Namespace(target=None, target_pos=None, json=True)
+
+    def native_json(_command: object, **options: object) -> SimpleNamespace:
+        assert options["announce"] is False
+        if options.get("capture"):
+            return SimpleNamespace(
+                returncode=0,
+                stdout=plistlib.dumps({"Disks": []}).decode(),
+                stderr="",
+            )
+        print('{"Disks": []}')
+        return SimpleNamespace(returncode=0, stdout=None, stderr=None)
+
+    for platform in ("linux", "macos", "windows"):
+        output = StringIO()
+        with (
+            patch(f"{__name__}.require_program", return_value="native-tool"),
+            patch(f"{__name__}.run", side_effect=native_json),
+            redirect_stdout(output),
+        ):
+            assert show(inventory_args, platform) == 0
+        assert json.loads(output.getvalue()) == {"Disks": []}
+    diagnostic = StringIO()
+    with (
+        patch(f"{__name__}.require_program", return_value="diskutil"),
+        patch(
+            f"{__name__}.run",
+            return_value=SimpleNamespace(
+                returncode=7,
+                stdout="",
+                stderr="native disk failure\n",
+            ),
+        ),
+        redirect_stderr(diagnostic),
+    ):
+        assert show(inventory_args, "macos") == 7
+    assert diagnostic.getvalue() == "native disk failure\n"
+    health_args = argparse.Namespace(target=None, target_pos=None)
+    with (
+        patch(f"{__name__}.require_program", return_value="lsblk"),
+        patch(
+            f"{__name__}.run",
+            return_value=SimpleNamespace(returncode=9),
+        ),
+    ):
+        assert health(health_args, "linux") == 9
+    with (
+        patch(f"{__name__}.require_program", return_value="lsblk"),
+        patch(f"{__name__}.find_program", side_effect=(None, "nvme")),
+        patch(
+            f"{__name__}.run",
+            side_effect=(
+                SimpleNamespace(returncode=0),
+                SimpleNamespace(returncode=7),
+            ),
+        ),
+        redirect_stderr(StringIO()),
+    ):
+        assert health(health_args, "linux") == 7
     with (
         patch.object(Path, "is_block_device", return_value=True),
         patch(f"{__name__}._linux_filesystem", return_value="ext4"),

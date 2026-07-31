@@ -69,10 +69,12 @@ def run(
     cwd: Path | None = None,
     capture: bool = False,
     check: bool = True,
+    announce: bool = True,
     ok_codes: Sequence[int] = (0,),
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    print(color(f"$ {command_text(command)}", "2"), flush=True)
+    if announce:
+        print(color(f"$ {command_text(command)}", "2"), flush=True)
     try:
         result = subprocess.run(
             list(command),
