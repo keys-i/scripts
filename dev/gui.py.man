@@ -23,7 +23,7 @@
     },
     {
       "flag": "--self-test",
-      "label": "Validate manual contracts and responsive layouts"
+      "label": "Validate manuals, layout snapshots, keyboard, and fallbacks"
     }
   ]
 }
@@ -58,6 +58,34 @@ The dashboard colors headings, safety callouts, tables, links, and code with
 the selected terminal theme. The `.man` source remains plain Markdown, so it
 also works through `curl`, Glow, GitHub, and terminals without color.
 
+## Keyboard and accessibility
+
+The dashboard does not require a mouse. `Tab` and `Shift+Tab` move focus;
+arrow keys move through tables, trees, menus, and tabs; `Enter` activates the
+focused control; `Space` toggles a checkbox; and `Escape` closes a dialog or
+cancels a safe running preview.
+
+| Key | Action |
+| --- | --- |
+| `/` | focus the script filter |
+| `F1` or `?` | show the selected script's help |
+| `F2` | open the three-step run wizard |
+| `F3` | open files and focus the file filter |
+| `F5` | sort the script catalog |
+| `Ctrl+Q` | quit when no non-interruptible apply is running |
+
+To run entirely from the keyboard, filter and select a script, press `F2`, use
+`Tab` and the arrow keys through Options, Working directory, and Review, then
+activate Run or Preview with `Enter`. Destructive apply still requires typing
+`CLEAN` and pressing `Enter` after a successful preview.
+
+Set `NO_COLOR=1` for Textual's monochrome rendering. Standard file and folder
+icons work without a patched font; `--nerd-fonts` is an explicit opt-in. The
+catalog also labels states as `Ready`, `Docs`, or `Other OS`, so meaning never
+depends on color. Terminal screen-reader behavior depends on the terminal and
+operating system; `./run.sh list`, `./run.sh man SCRIPT`, and direct commands
+remain non-TUI alternatives.
+
 ## Options
 
 | Option | Meaning |
@@ -65,7 +93,7 @@ also works through `curl`, Glow, GitHub, and terminals without color.
 | `--root PATH` | use one local scripts checkout |
 | `--inline` | run below the prompt on macOS or Linux |
 | `--nerd-fonts` | use Nerd Font file and folder icons |
-| `--self-test` | validate every manual contract and compact/wide layouts |
+| `--self-test` | validate manuals, layout snapshots, keyboard, and fallbacks |
 
 ## Direct CLI
 
@@ -73,6 +101,7 @@ also works through `curl`, Glow, GitHub, and terminals without color.
 uv run dev/gui.py
 uv run dev/gui.py --root .
 uv run dev/gui.py --inline --nerd-fonts
+NO_COLOR=1 uv run dev/gui.py --root .
 uv run dev/gui.py --root . --self-test
 ```
 
