@@ -977,7 +977,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
                                         for value, label in parameter.choices
                                     ),
                                     allow_blank=not parameter.required,
-                                    value=parameter.default or Select.BLANK,
+                                    value=parameter.default or Select.NULL,
                                     id=f"parameter-{index}",
                                 )
                             else:
@@ -1051,7 +1051,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
             if not parameter.choices:
                 continue
             value = self.query_one(f"#parameter-{index}", Select).value
-            selected[parameter.name] = "" if value is Select.BLANK else str(value)
+            selected[parameter.name] = "" if value is Select.NULL else str(value)
         return selected
 
     def refresh_conditions(self) -> None:
@@ -1082,7 +1082,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
                 widget.value.strip()
                 if isinstance(widget, Input)
                 else ""
-                if widget.value is Select.BLANK
+                if widget.value is Select.NULL
                 else str(widget.value)
             )
             if parameter.required and not value:
@@ -2276,12 +2276,20 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                     "placeholder": "optional text",
                     "when": {"action": ["fix"]},
                 },
+                {
+                    "name": "format",
+                    "label": "Format",
+                    "choices": [
+                        {"value": "text", "label": "Text"},
+                        {"value": "json", "label": "JSON"},
+                    ],
+                },
             ],
         }
         help_path = script_path.with_name("probe.py.man")
         probe_markdown = (
-            "# Probe\n\n`action`, `--query`, `--apply`, and `--yes` exercise "
-            "typed parameters.\n"
+            "# Probe\n\n`action`, `--query`, `format`, `--apply`, and `--yes` "
+            "exercise typed parameters.\n"
         )
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
@@ -2401,6 +2409,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         await pilot.pause()
         conditional_wizard = compact.screen
         assert isinstance(conditional_wizard, RunWizard)
+        assert conditional_wizard.query_one("#parameter-2", Select).value is Select.NULL
         hidden_query = conditional_wizard.query_one("#parameter-1", Input)
         hidden_query.value = "ignored"
         assert not conditional_wizard.query_one("#parameter-row-1").display
