@@ -69,7 +69,7 @@ cancels a safe running preview.
 | Key | Action |
 | --- | --- |
 | `/` | focus the script filter |
-| `F1` or `?` | show the selected script's help |
+| `F1` or `?` | show and focus the selected script's help |
 | `F2` | open the three-step run wizard |
 | `F3` | open files and focus the file filter |
 | `F5` | sort the script catalog |
@@ -80,10 +80,13 @@ To run entirely from the keyboard, filter and select a script, press `F2`, use
 activate Run or Preview with `Enter`. Destructive apply still requires typing
 `CLEAN` and pressing `Enter` after a successful preview.
 
+While help is focused, use arrows, `Page Up`/`Page Down`, `Home`/`End`, or the
+mouse wheel to scroll its full manual.
+
 Set `NO_COLOR=1` for Textual's monochrome rendering. Standard file and folder
 icons work without a patched font; `--nerd-fonts` is an explicit opt-in. The
-catalog also labels states as `Ready`, `Docs`, or `Other OS`, so meaning never
-depends on color. Terminal screen-reader behavior depends on the terminal and
+catalog also labels states as `● Ready`, `◆ Guide`, or `○ Linux`/`macOS`/`Windows`,
+so meaning never depends on color. Terminal screen-reader behavior depends on the terminal and
 operating system; `./run.sh list`, `./run.sh man SCRIPT`, and direct commands
 remain non-TUI alternatives.
 

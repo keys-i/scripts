@@ -73,6 +73,12 @@ SEARCH_DIRS = ("bin", "dev", "sys")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 PLATFORMS = {"any", "linux", "macos", "windows"}
+PLATFORM_LABELS = {
+    "any": "Any",
+    "linux": "Linux",
+    "macos": "macOS",
+    "windows": "Windows",
+}
 METADATA_KEYS = {
     "summary",
     "platform",
@@ -839,9 +845,14 @@ class DirectoryPicker(ModalScreen[Path | None]):
         self.dismiss(None)
 
     @on(Input.Changed, "#directory-filter")
-    async def filter_tree(self, event: Input.Changed) -> None:
+    def filter_tree(self, event: Input.Changed) -> None:
+        self.reload_tree(event.value)
+
+    @work(group="directory-filter", exclusive=True)
+    async def reload_tree(self, query: str) -> None:
+        await asyncio.sleep(0.12)
         tree = self.query_one("#directory-tree", FilteredDirectoryTree)
-        tree.filter_text = event.value
+        tree.filter_text = query
         await tree.reload()
 
     @on(DirectoryTree.DirectorySelected, "#directory-tree")
@@ -966,7 +977,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
                                         for value, label in parameter.choices
                                     ),
                                     allow_blank=not parameter.required,
-                                    value=parameter.default or Select.BLANK,
+                                    value=parameter.default or Select.NULL,
                                     id=f"parameter-{index}",
                                 )
                             else:
@@ -1040,7 +1051,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
             if not parameter.choices:
                 continue
             value = self.query_one(f"#parameter-{index}", Select).value
-            selected[parameter.name] = "" if value is Select.BLANK else str(value)
+            selected[parameter.name] = "" if value is Select.NULL else str(value)
         return selected
 
     def refresh_conditions(self) -> None:
@@ -1071,7 +1082,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
                 widget.value.strip()
                 if isinstance(widget, Input)
                 else ""
-                if widget.value is Select.BLANK
+                if widget.value is Select.NULL
                 else str(widget.value)
             )
             if parameter.required and not value:
@@ -1357,7 +1368,7 @@ class ScriptsApp(App[None]):
     }
 
     #catalog-panel {
-        width: 42%;
+        width: 38%;
         min-width: 32;
         height: 1fr;
         border: round $primary;
@@ -1385,8 +1396,19 @@ class ScriptsApp(App[None]):
         padding: 0 1;
     }
 
-    #help {
+    #help-scroll {
         height: 1fr;
+        background: $surface;
+        scrollbar-gutter: stable;
+    }
+
+    #help-scroll:focus {
+        outline: tall $accent;
+    }
+
+    #help {
+        height: auto;
+        padding: 0 1;
     }
 
     #help MarkdownH1 {
@@ -1618,7 +1640,7 @@ class ScriptsApp(App[None]):
                     allow_blank=False,
                     id="theme",
                 )
-                yield Button("Run", variant="primary", id="run")
+                yield Button("▶ Run", variant="primary", id="run")
                 yield Button("Files", id="files-button")
             with Horizontal(id="workspace"):
                 with Vertical(id="catalog-panel"):
@@ -1629,7 +1651,10 @@ class ScriptsApp(App[None]):
                         id="scripts",
                     )
                 with TabbedContent(id="details-tabs"):
-                    with TabPane("Help", id="help-pane"):
+                    with (
+                        TabPane("Help", id="help-pane"),
+                        VerticalScroll(id="help-scroll"),
+                    ):
                         yield Markdown(id="help")
                     with TabPane("Output", id="output-pane"):
                         yield Label("Ready", id="activity-heading")
@@ -1689,8 +1714,6 @@ class ScriptsApp(App[None]):
         table = self.query_one("#scripts", DataTable)
         table.add_column("State", key="state")
         table.add_column("Script", key="script")
-        table.add_column("OS", key="platform")
-        table.add_column("Summary", key="summary")
         history = self.query_one("#history", DataTable)
         history.add_columns("Time", "Script", "Phase", "Result", "Seconds")
         self.refresh_catalog()
@@ -1719,20 +1742,22 @@ class ScriptsApp(App[None]):
         for script in visible:
             ready = script.supported and script.launchable
             state = Text(
-                "Ready" if ready else "Docs" if not script.launchable else "Other OS",
+                "● Ready"
+                if ready
+                else "◆ Guide"
+                if not script.launchable
+                else f"○ {PLATFORM_LABELS[script.platform]}",
                 style=(
                     "green"
                     if ready
                     else "bright_blue"
                     if not script.launchable
-                    else "bright_black"
+                    else "bright_yellow"
                 ),
             )
             table.add_row(
                 state,
                 script.title,
-                script.platform,
-                script.summary,
                 key=script.script_id,
             )
         if self.sort_column is not None:
@@ -1756,6 +1781,7 @@ class ScriptsApp(App[None]):
             self.query_one("#help", Markdown).update(
                 "# No matches\n\nTry a shorter filter."
             )
+            self.query_one("#help-scroll", VerticalScroll).scroll_home(animate=False)
         self.update_controls()
 
     def show_script(self, script: ScriptSpec) -> None:
@@ -1765,12 +1791,13 @@ class ScriptsApp(App[None]):
             if not script.launchable
             else "Available on this computer"
             if script.supported
-            else f"Available on {script.platform}"
+            else f"Available on {PLATFORM_LABELS[script.platform]}"
         )
         self.query_one("#help", Markdown).update(
             f"> **{badge}** · {PRIVILEGE_LABELS[script.privilege]} · "
             f"`{script.script_id}`\n\n{script.markdown}"
         )
+        self.query_one("#help-scroll", VerticalScroll).scroll_home(animate=False)
         self.update_controls()
 
     def update_controls(self) -> None:
@@ -1788,9 +1815,9 @@ class ScriptsApp(App[None]):
             script.supported and script.launchable for script in self.scripts
         )
         state = "running" if self.started_at is not None else "ready"
+        platform = PLATFORM_LABELS.get(host_platform(), host_platform())
         self.query_one("#status", Static).update(
-            f"[b]{supported} of {len(self.scripts)}[/b] available · "
-            f"{host_platform()} · {state}"
+            f"[b]{supported}/{len(self.scripts)} available[/b] · {platform} · {state}"
         )
 
     @on(Input.Changed, "#script-filter")
@@ -1878,6 +1905,7 @@ class ScriptsApp(App[None]):
 
     def action_help_tab(self) -> None:
         self.query_one("#details-tabs", TabbedContent).active = "help-pane"
+        self.query_one("#help-scroll", VerticalScroll).focus()
 
     def action_files(self) -> None:
         self.query_one("#details-tabs", TabbedContent).active = "files-pane"
@@ -2159,7 +2187,9 @@ def _is_command(path: Path) -> bool:
 
 
 async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
+
+    from textual.events import MouseScrollDown
 
     def layout_snapshot(app: ScriptsApp) -> dict[str, tuple[int, int, int, int]]:
         snapshot = {}
@@ -2168,7 +2198,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             "#toolbar",
             "#catalog-panel",
             "#details-tabs",
-            "#help",
+            "#help-scroll",
         ):
             region = app.query_one(selector).region
             snapshot[selector] = (region.x, region.y, region.width, region.height)
@@ -2246,12 +2276,20 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                     "placeholder": "optional text",
                     "when": {"action": ["fix"]},
                 },
+                {
+                    "name": "format",
+                    "label": "Format",
+                    "choices": [
+                        {"value": "text", "label": "Text"},
+                        {"value": "json", "label": "JSON"},
+                    ],
+                },
             ],
         }
         help_path = script_path.with_name("probe.py.man")
         probe_markdown = (
-            "# Probe\n\n`action`, `--query`, `--apply`, and `--yes` exercise "
-            "typed parameters.\n"
+            "# Probe\n\n`action`, `--query`, `format`, `--apply`, and `--yes` "
+            "exercise typed parameters.\n"
         )
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
@@ -2294,7 +2332,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             "#toolbar": (1, 1, 48, 7),
             "#catalog-panel": (1, 8, 48, 4),
             "#details-tabs": (1, 13, 48, 4),
-            "#help": (2, 15, 46, 2),
+            "#help-scroll": (2, 15, 46, 2),
         }
         fallback_tree = compact.query_one("#repo-tree", FilteredDirectoryTree)
         assert (
@@ -2305,7 +2343,8 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         table = compact.query_one("#scripts", DataTable)
         assert table.row_count == len(scripts)
         details = compact.query_one("#details-tabs", TabbedContent).region
-        help_region = compact.query_one("#help", Markdown).region
+        help_scroll = compact.query_one("#help-scroll", VerticalScroll)
+        help_region = help_scroll.region
         assert details.height > 0 and details.y < compact.size.height
         assert help_region.height > 0 and help_region.y < compact.size.height
         for script in scripts:
@@ -2322,14 +2361,29 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         other_os = next(
             script for script in scripts if not script.supported and script.launchable
         )
-        assert table.get_row(runnable.script_id)[0].plain == "Ready"
-        assert table.get_row(dashboard.script_id)[0].plain == "Docs"
-        assert table.get_row(other_os.script_id)[0].plain == "Other OS"
+        assert table.get_row(runnable.script_id)[0].plain == "● Ready"
+        assert table.get_row(dashboard.script_id)[0].plain == "◆ Guide"
+        assert table.get_row(other_os.script_id)[0].plain == (
+            f"○ {PLATFORM_LABELS[other_os.platform]}"
+        )
         compact.show_script(runnable)
+        await pilot.pause()
+        assert help_scroll.max_scroll_y > 0
         await pilot.press("/")
         assert compact.focused is compact.query_one("#script-filter", Input)
         await pilot.press("f1")
         assert compact.query_one("#details-tabs", TabbedContent).active == "help-pane"
+        assert compact.focused is help_scroll
+        await pilot.press("end")
+        await pilot.pause()
+        assert help_scroll.scroll_y > 0
+        help_scroll.scroll_home(animate=False)
+        await pilot.pause()
+        help_scroll.post_message(
+            MouseScrollDown(help_scroll, 1, 1, 0, 1, 0, False, False, False)
+        )
+        await pilot.pause()
+        assert help_scroll.scroll_y > 0
         await pilot.press("f3")
         assert compact.query_one("#details-tabs", TabbedContent).active == "files-pane"
         assert compact.focused is compact.query_one("#file-filter", Input)
@@ -2355,6 +2409,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         await pilot.pause()
         conditional_wizard = compact.screen
         assert isinstance(conditional_wizard, RunWizard)
+        assert conditional_wizard.query_one("#parameter-2", Select).value is Select.NULL
         hidden_query = conditional_wizard.query_one("#parameter-1", Input)
         hidden_query.value = "ignored"
         assert not conditional_wizard.query_one("#parameter-row-1").display
@@ -2379,6 +2434,25 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         await pilot.press("enter")
         await pilot.pause()
         assert confirmed == [True]
+        compact.push_screen(DirectoryPicker(root, False))
+        await pilot.pause()
+        directory_filter = compact.screen.query_one("#directory-filter", Input)
+        directory_tree = compact.screen.query_one(
+            "#directory-tree", FilteredDirectoryTree
+        )
+        with patch.object(
+            directory_tree,
+            "reload",
+            AsyncMock(wraps=directory_tree.reload),
+        ) as reload_tree:
+            directory_filter.value = "b"
+            directory_filter.value = "bi"
+            directory_filter.value = "bin"
+            await pilot.pause(0.3)
+            assert reload_tree.await_count == 1
+            assert directory_tree.filter_text == "bin"
+        await pilot.press("escape")
+        await pilot.pause()
 
     wide = ScriptsApp(root, scripts, nerd_fonts=True)
     async with wide.run_test(size=(140, 40)) as pilot:
@@ -2387,9 +2461,9 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert layout_snapshot(wide) == {
             "#hero": (1, 1, 138, 5),
             "#toolbar": (1, 6, 138, 4),
-            "#catalog-panel": (1, 10, 57, 29),
-            "#details-tabs": (59, 10, 80, 29),
-            "#help": (60, 12, 78, 27),
+            "#catalog-panel": (1, 10, 52, 29),
+            "#details-tabs": (54, 10, 85, 29),
+            "#help-scroll": (55, 12, 83, 27),
         }
         nerd_tree = wide.query_one("#repo-tree", FilteredDirectoryTree)
         assert (

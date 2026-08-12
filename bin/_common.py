@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -165,6 +166,30 @@ def safe_targets(root: Path, patterns: Sequence[str]) -> list[Path]:
                     raise ToolError(f"target crosses a directory symlink: {target}")
             targets.add(target)
     return sorted(targets, key=lambda path: (len(path.parts), str(path)), reverse=True)
+
+
+def target_usage(targets: Sequence[Path]) -> tuple[int, int]:
+    """Count entries and logical bytes without following symlinks."""
+    roots: list[Path] = []
+    for target in sorted(set(targets), key=lambda path: (len(path.parts), str(path))):
+        if not any(root == target or root in target.parents for root in roots):
+            roots.append(target)
+
+    items = total_bytes = 0
+    pending = roots[:]
+    while pending:
+        path = pending.pop()
+        try:
+            metadata = path.lstat()
+            items += 1
+            if stat.S_ISDIR(metadata.st_mode):
+                with os.scandir(path) as entries:
+                    pending.extend(Path(entry.path) for entry in entries)
+            else:
+                total_bytes += metadata.st_size
+        except OSError:
+            continue
+    return items, total_bytes
 
 
 def remove_targets(targets: Sequence[Path]) -> tuple[int, int]:

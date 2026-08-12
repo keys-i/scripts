@@ -36,7 +36,7 @@ Clean regenerable Linux caches. Nothing is deleted without --apply.
   --logs        Keep only 7 days of archived systemd journal logs
   --store-gc    Garbage-collect unreachable Nix and Guix store objects
   --yes         Skip confirmation; requires --apply
-  --verbose     List every filesystem target
+  --verbose     List completed filesystem targets after apply
   --self-test   Test deletion and path guards in a temporary directory
   -h, --help    Show help
 
@@ -178,7 +178,7 @@ clean_dir() {
   TARGETS=$((TARGETS + 1))
 
   if [ "$APPLY" -eq 0 ]; then
-    [ "$VERBOSE" -eq 0 ] || printf 'would clean %s: %s\n' "$kind" "$dir"
+    printf 'would clean %s: %s\n' "$kind" "$dir"
     return 0
   fi
 

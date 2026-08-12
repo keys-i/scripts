@@ -4,11 +4,12 @@ The `agent` command keeps a deliberately small local-state registry and uses
 the live [Agent Skills CLI](https://github.com/vercel-labs/skills) for market
 compatibility. No index can guarantee every public, private, or unpublished
 skill. `agent market QUERY` searches the current indexed catalog, and
-`agent market --install OWNER/REPOSITORY --agent NAME` asks the market tool to
-apply its current client-specific installer.
+`agent market --install OWNER/REPOSITORY` previews every supported detected
+agent by default; `--agent NAME` narrows the market tool to one installer. CLI
+behavior is pinned to `skills@1.5.22`.
 
 Contracts and links were reviewed against official vendor documentation on
-31 July 2026 (Australia/Brisbane).
+12 August 2026 (Australia/Brisbane).
 
 ## Safety contract
 
