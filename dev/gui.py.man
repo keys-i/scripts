@@ -58,6 +58,8 @@ downloaded.
 The dashboard colors headings, safety callouts, tables, links, and code with
 the selected terminal theme. The `.man` source remains plain Markdown, so it
 also works through `curl`, Glow, GitHub, and terminals without color.
+The Files tab uses Rich/Pygments highlighting for every bundled lexer; unknown
+formats remain plain text.
 
 ## Keyboard and accessibility
 

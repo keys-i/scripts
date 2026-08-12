@@ -36,6 +36,7 @@ from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
 from _manual import PRIVILEGE_LABELS
+from rich.syntax import Syntax
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -60,7 +61,6 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
-    TextArea,
 )
 
 ARCHIVE_URL = "https://github.com/keys-i/scripts/archive/refs/heads/main.zip"
@@ -711,6 +711,20 @@ def markdown_code_block(text: str) -> str:
 def terminal_text(line: str) -> Text:
     """Render ANSI/TrueColor output instead of exposing escape sequences."""
     return Text.from_ansi(line)
+
+
+def syntax_lexer(path: Path, text: str) -> str:
+    if path.suffix.casefold() == ".man":
+        return "markdown"
+    lexer = Syntax.guess_lexer(str(path), text)
+    if lexer != "default":
+        return lexer
+    shebang = text.partition("\n")[0].casefold()
+    if "uv run --script" in shebang or "python" in shebang:
+        return "python"
+    if any(shell in shebang for shell in ("bash", "zsh", "/sh", " sh")):
+        return "bash"
+    return "text"
 
 
 def read_file_preview(path: Path, root: Path) -> str:
@@ -1701,10 +1715,8 @@ class ScriptsApp(App[None]):
                                 nerd_fonts=self.nerd_fonts,
                                 id="repo-tree",
                             )
-                            yield TextArea(
-                                read_only=True,
-                                show_line_numbers=True,
-                                placeholder="Select a file to preview it",
+                            yield RichLog(
+                                auto_scroll=False,
                                 id="file-preview",
                             )
         yield Footer()
@@ -1716,6 +1728,7 @@ class ScriptsApp(App[None]):
         table.add_column("Script", key="script")
         history = self.query_one("#history", DataTable)
         history.add_columns("Time", "Script", "Phase", "Result", "Seconds")
+        self.query_one("#file-preview", RichLog).write("Select a file to preview it")
         self.refresh_catalog()
         self.set_interval(0.25, self.update_elapsed)
 
@@ -1879,7 +1892,7 @@ class ScriptsApp(App[None]):
 
     @on(DirectoryTree.FileSelected, "#repo-tree")
     async def preview_file(self, event: DirectoryTree.FileSelected) -> None:
-        preview = self.query_one("#file-preview", TextArea)
+        preview = self.query_one("#file-preview", RichLog)
         try:
             text = await asyncio.to_thread(
                 read_file_preview,
@@ -1887,8 +1900,17 @@ class ScriptsApp(App[None]):
                 self.root,
             )
         except GuiError as error:
-            text = str(error)
-        preview.load_text(text)
+            rendered: str | Syntax = str(error)
+        else:
+            rendered = Syntax(
+                text,
+                syntax_lexer(event.path, text),
+                theme="ansi_dark" if self.current_theme.dark else "ansi_light",
+                line_numbers=True,
+            )
+        preview.clear()
+        preview.write(rendered)
+        preview.scroll_home(animate=False)
 
     @on(Button.Pressed)
     def press_button(self, event: Button.Pressed) -> None:
@@ -2471,6 +2493,24 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             nerd_tree.ICON_NODE,
             nerd_tree.ICON_NODE_EXPANDED,
         ) == ("󰈔 ", "󰉋 ", "󰝰 ")
+        wide.action_files()
+        await pilot.pause()
+        await wide.preview_file(
+            DirectoryTree.FileSelected(nerd_tree.root, root / "dev/gui.py")
+        )
+        await pilot.pause()
+        preview = wide.query_one("#file-preview", RichLog)
+        assert preview.lines and preview.max_scroll_y > 0
+        preview.focus()
+        await pilot.press("end")
+        await pilot.pause()
+        assert preview.scroll_y > 0
+        assert syntax_lexer(root / "sys/windows/clean.ps1", "") == "powershell"
+        assert (
+            syntax_lexer(root / "bin/agent", "#!/usr/bin/env -S uv run --script")
+            == "python"
+        )
+        assert syntax_lexer(root / "unknown", "plain text") == "text"
         with tempfile.TemporaryDirectory(prefix="scripts-gui-test-") as directory:
             test_root = Path(directory)
             probe = test_root / "long-line.py"
