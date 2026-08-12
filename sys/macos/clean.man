@@ -18,7 +18,7 @@
     },
     {
       "flag": "--verbose",
-      "label": "Show every filesystem target"
+      "label": "Show completed filesystem targets after apply"
     }
   ]
 }
@@ -42,6 +42,8 @@ than three days; `--all-temp` includes all owned entries.
 - unavailable Simulator devices
 - Homebrew downloads and old package versions
 - Quick Look caches and stale current-user temporary files
+- owned entries older than three days in `/private/tmp` (`/tmp`) and
+  `/private/var/tmp`; `--all-temp` includes recent owned entries
 
 ## Safety
 
@@ -57,7 +59,7 @@ Close applications, Xcode, and Simulator before applying the plan.
 | --- | --- |
 | `--all-temp` | include recent current-user temp files |
 | `--logs` | include user application and diagnostic logs |
-| `--verbose` | print every filesystem target |
+| `--verbose` | print completed filesystem targets after apply |
 | `--apply` | repeat discovery with deletion enabled |
 | `--yes` | accept the script's prompt after TUI confirmation |
 

@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,13 +21,374 @@ from _common import (
     ToolError,
     apply_steps,
     color,
+    confirmed,
+    find_program,
     heading,
+    remove_targets,
     require_program,
     run,
+    target_usage,
     warning,
 )
 
 EXPIRY = re.compile(r"^(?:\d+\.(?:days?|weeks?|months?|years?)\.ago|now)$")
+CACHE_TAG = b"Signature: 8a477f597d28d172789f06886806bc55"
+VCS_DIRS = {".git", ".hg", ".svn"}
+HOME_STATE_DIRS = {"AppData", "Library"}
+PYTHON_CACHES = {
+    "__pycache__",
+    ".hypothesis",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".tox",
+}
+PROJECT_OUTPUTS = {
+    "node_modules": {"package.json"},
+    "vendor": {"composer.json"},
+    "Pods": {"Podfile"},
+    ".next": {"package.json"},
+    ".nuxt": {"package.json"},
+    ".parcel-cache": {"package.json"},
+    ".svelte-kit": {"package.json"},
+    ".turbo": {"package.json"},
+    "target": {"Cargo.toml", "pom.xml"},
+    ".gradle": {
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    },
+    "build": {
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "CMakeLists.txt",
+        "pubspec.yaml",
+    },
+    ".build": {"Package.swift"},
+    "bin": {"*.csproj", "*.fsproj", "*.vbproj"},
+    "obj": {"*.csproj", "*.fsproj", "*.vbproj"},
+    ".dart_tool": {"pubspec.yaml"},
+    "_build": {"mix.exs"},
+    "deps": {"mix.exs"},
+    ".stack-work": {"*.cabal", "cabal.project"},
+    "dist-newstyle": {"*.cabal", "cabal.project"},
+    ".zig-cache": {"build.zig"},
+    "zig-out": {"build.zig"},
+    ".terraform": {"*.tf", ".terraform.lock.hcl"},
+}
+
+
+@dataclass(frozen=True)
+class Artifact:
+    label: str
+    path: Path
+    items: int
+    bytes: int
+
+
+@dataclass(frozen=True)
+class CachePlan:
+    label: str
+    paths: tuple[Path, ...]
+    command: tuple[str, ...] | None = None
+
+
+def _generated_label(name: str, files: set[str], path: Path) -> str | None:
+    if name in PYTHON_CACHES:
+        return "Python tool cache"
+    if (
+        name in {".venv", "venv"}
+        and (path / "pyvenv.cfg").is_file()
+        and (
+            {"pyproject.toml", "requirements.txt", "Pipfile", "poetry.lock", "uv.lock"}
+            & files
+        )
+    ):
+        return "Python virtual environment"
+    markers = PROJECT_OUTPUTS.get(name, ())
+    if any(
+        marker in files
+        or (marker.startswith("*") and any(file.endswith(marker[1:]) for file in files))
+        for marker in markers
+    ):
+        return "Generated project data"
+    return None
+
+
+def _cache_tagged(path: Path, entries: list[os.DirEntry[str]]) -> bool:
+    tag = next((entry for entry in entries if entry.name == "CACHEDIR.TAG"), None)
+    if tag is None or not tag.is_file(follow_symlinks=False):
+        return False
+    try:
+        with (path / tag.name).open("rb") as file:
+            return file.read(len(CACHE_TAG)) == CACHE_TAG
+    except OSError:
+        return False
+
+
+def _artifact(label: str, path: Path) -> Artifact:
+    items, total_bytes = target_usage([path])
+    return Artifact(label, path, items, total_bytes)
+
+
+def discover_artifacts(root: Path) -> tuple[list[Artifact], int]:
+    """Find explicitly regenerable project directories below root."""
+    if root.is_symlink():
+        raise ToolError(f"refusing symbolic-link scan root: {root}")
+    try:
+        root = root.resolve(strict=True)
+        device = root.stat().st_dev
+    except OSError as error:
+        raise ToolError(f"cannot inspect scan root {root}: {error}") from error
+    if not root.is_dir() or root == Path(root.anchor):
+        raise ToolError("scan root must be a directory below the filesystem root")
+
+    findings: list[Artifact] = []
+    skipped = 0
+    pending = [root]
+    home = Path.home().resolve()
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as scan:
+                entries = list(scan)
+        except OSError:
+            skipped += 1
+            continue
+        if current != root and _cache_tagged(current, entries):
+            findings.append(_artifact("Tagged cache", current))
+            continue
+
+        files: set[str] = set()
+        directories: list[os.DirEntry[str]] = []
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(entry)
+                elif entry.is_file(follow_symlinks=False):
+                    files.add(entry.name)
+            except OSError:
+                skipped += 1
+        for entry in directories:
+            try:
+                path = Path(entry.path)
+                if entry.stat(follow_symlinks=False).st_dev != device:
+                    continue
+            except OSError:
+                skipped += 1
+                continue
+            if label := _generated_label(entry.name, files, path):
+                findings.append(_artifact(label, path))
+                continue
+            if entry.name.startswith("cmake-build-") and "CMakeLists.txt" in files:
+                findings.append(_artifact("Generated project data", path))
+                continue
+            if entry.name in VCS_DIRS or (
+                current == root == home
+                and (entry.name.startswith(".") or entry.name in HOME_STATE_DIRS)
+            ):
+                continue
+            pending.append(path)
+    return sorted(findings, key=lambda item: (-item.bytes, str(item.path))), skipped
+
+
+def _safe_cache_path(value: str, home: Path) -> Path | None:
+    path = Path(value.strip()).expanduser()
+    if not path.is_absolute():
+        return None
+    try:
+        relative = path.relative_to(home)
+        current = home
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                return None
+        path = path.resolve(strict=True)
+        path.relative_to(home)
+    except (OSError, ValueError):
+        return None
+    return path if path != home and path.is_dir() else None
+
+
+def _reported_cache(
+    label: str,
+    names: tuple[str, ...],
+    query: tuple[str, ...],
+    clean: tuple[str, ...],
+    home: Path,
+) -> CachePlan | None:
+    program = find_program(*names)
+    if program is None:
+        return None
+    try:
+        result = run(
+            (program, *query),
+            capture=True,
+            check=False,
+            announce=False,
+            timeout=5,
+        )
+    except (ToolError, OSError):
+        return None
+    lines = (result.stdout or "").strip().splitlines()
+    path = (
+        _safe_cache_path(lines[-1], home) if result.returncode == 0 and lines else None
+    )
+    return CachePlan(label, (path,), (program, *clean)) if path else None
+
+
+def discover_caches() -> list[CachePlan]:
+    """Locate user caches through native tools, then known tool-owned paths."""
+    home = Path.home().resolve()
+    definitions = (
+        (
+            "Go build cache",
+            ("go",),
+            ("env", "GOCACHE"),
+            ("clean", "-cache", "-testcache"),
+        ),
+        (
+            "Go module cache",
+            ("go",),
+            ("env", "GOMODCACHE"),
+            ("clean", "-modcache"),
+        ),
+        (
+            "npm cache",
+            ("npm",),
+            ("config", "get", "cache"),
+            ("cache", "clean", "--force"),
+        ),
+        ("pnpm store", ("pnpm",), ("store", "path"), ("store", "prune")),
+        ("pip cache", ("pip3", "pip"), ("cache", "dir"), ("cache", "purge")),
+        ("uv cache", ("uv",), ("cache", "dir"), ("cache", "prune")),
+    )
+    with ThreadPoolExecutor(max_workers=len(definitions)) as pool:
+        plans = [
+            plan
+            for plan in pool.map(lambda item: _reported_cache(*item, home), definitions)
+            if plan is not None
+        ]
+
+    cargo = Path(os.environ.get("CARGO_HOME", home / ".cargo")).expanduser()
+    gradle = Path(os.environ.get("GRADLE_USER_HOME", home / ".gradle")).expanduser()
+    static = (
+        ("Cargo registry and Git caches", (cargo / "registry", cargo / "git")),
+        (
+            "Gradle caches and wrapper distributions",
+            (gradle / "caches", gradle / "wrapper/dists"),
+        ),
+        ("Maven local repository", (home / ".m2/repository",)),
+        (
+            "NuGet global packages",
+            (Path(os.environ.get("NUGET_PACKAGES", home / ".nuget/packages")),),
+        ),
+    )
+    for label, candidates in static:
+        paths = tuple(
+            path
+            for candidate in candidates
+            if (path := _safe_cache_path(str(candidate), home)) is not None
+        )
+        if paths:
+            plans.append(CachePlan(label, paths))
+
+    seen: list[Path] = []
+    unique: list[CachePlan] = []
+    for plan in plans:
+        paths = tuple(
+            path
+            for path in plan.paths
+            if not any(root == path or root in path.parents for root in seen)
+        )
+        seen.extend(paths)
+        if paths:
+            unique.append(CachePlan(plan.label, paths, plan.command))
+    return unique
+
+
+def _human_bytes(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+        amount /= 1024
+    raise AssertionError("unreachable")
+
+
+def dev(args: argparse.Namespace) -> int:
+    root = Path(args.root or ".").expanduser()
+    artifacts, skipped = discover_artifacts(root)
+    cache_plans = [] if args.project_only else discover_caches()
+    cache_roots = [path for plan in cache_plans for path in plan.paths]
+    artifacts = [
+        item
+        for item in artifacts
+        if not any(
+            root == item.path or root in item.path.parents for root in cache_roots
+        )
+    ]
+    cache_artifacts = [
+        _artifact(plan.label, path) for plan in cache_plans for path in plan.paths
+    ]
+    findings = [*artifacts, *cache_artifacts]
+    total_items = sum(item.items for item in findings)
+    total_bytes = sum(item.bytes for item in findings)
+
+    heading("Developer clutter")
+    print(f"Scan root: {root.resolve()}")
+    for item in findings:
+        print(f"  {_human_bytes(item.bytes):>10}  {item.label:<34} {item.path}")
+    if skipped:
+        warning(f"inventory skipped {skipped} unreadable directories")
+    if not findings:
+        print("No supported developer clutter was found.")
+        return 1 if skipped else 0
+    print(
+        f"Plan: {len(findings)} target(s), {total_items} item(s), "
+        f"{_human_bytes(total_bytes)} logical size."
+    )
+    warning("Close package managers, compilers, and editors before applying.")
+    if not confirmed(
+        apply=args.apply,
+        yes=args.yes,
+        prompt="remove the listed developer clutter",
+    ):
+        return 1 if skipped else 0
+
+    failed = 0
+    for plan in cache_plans:
+        if plan.command is None:
+            continue
+        try:
+            result = run(plan.command, check=False)
+        except (ToolError, OSError) as error:
+            warning(f"{plan.label} cleanup failed: {error}")
+            failed += 1
+        else:
+            if result.returncode:
+                warning(f"{plan.label} cleanup exited {result.returncode}")
+                failed += 1
+    native_paths = {
+        path for plan in cache_plans if plan.command is not None for path in plan.paths
+    }
+    direct = [item.path for item in findings if item.path not in native_paths]
+    for target in direct:
+        try:
+            remove_targets([target])
+        except OSError as error:
+            warning(f"could not remove {target}: {error}")
+            failed += 1
+    remaining = sum(target_usage([item.path])[1] for item in findings)
+    reclaimed = max(0, total_bytes - remaining)
+    result = f"Reclaimed {_human_bytes(reclaimed)}; {failed} cleanup(s) failed."
+    print(color(result, "1;31" if failed else "1;32"))
+    return 1 if failed or skipped else 0
 
 
 def checked_expiry(args: argparse.Namespace) -> str:
@@ -188,9 +552,13 @@ def rewrite(args: argparse.Namespace, repo: Path) -> int:
 
 
 def self_test() -> int:
+    from contextlib import redirect_stderr
+    from io import StringIO
+
     assert EXPIRY.fullmatch("30.days.ago")
     assert EXPIRY.fullmatch("2.weeks.ago")
     assert not EXPIRY.fullmatch("30 days ago")
+    assert _human_bytes(1024) == "1.0 KiB"
     try:
         checked_expiry(argparse.Namespace(expire="now", force=False))
     except ToolError:
@@ -204,8 +572,31 @@ def self_test() -> int:
     else:
         raise AssertionError("zero-duration expiry accepted without --force")
     assert git_command(Path.cwd() / "repo", "status")[-1] == "status"
+    with redirect_stderr(StringIO()):
+        try:
+            parse_args(["dev", "--repo", "."])
+        except SystemExit as error:
+            assert error.code == 2
+        else:
+            raise AssertionError("developer cleanup accepted a Git-only option")
     with TemporaryDirectory() as directory:
-        repo = Path(directory)
+        home = (Path(directory) / "home").resolve()
+        cache = home / "cache"
+        outside = (Path(directory) / "outside-cache").resolve()
+        cache.mkdir(parents=True)
+        (outside / "nested").mkdir(parents=True)
+        assert _safe_cache_path(str(cache), home) == cache
+        assert _safe_cache_path(str(outside), home) is None
+        linked = home / "linked"
+        try:
+            linked.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            assert _safe_cache_path(str(linked / "nested"), home) is None
+
+        repo = Path(directory) / "repo"
+        repo.mkdir()
         run(git_command(repo, "init", "--quiet"))
         run(git_command(repo, "config", "status.showUntrackedFiles", "no"))
         (repo / "untracked").write_text("not in the bundle\n", encoding="utf-8")
@@ -218,16 +609,63 @@ def self_test() -> int:
             assert "dirty" in str(error)
         else:
             raise AssertionError("forced rewrite accepted an untracked file")
-    print("ok: Git audit, expiry, garbage-collection, and rewrite contracts")
+
+        clutter = Path(directory) / "clutter"
+        node = clutter / "node"
+        rust = clutter / "rust"
+        python = clutter / "python"
+        tagged = clutter / "tagged"
+        ignored = clutter / "unmarked"
+        for path in (node, rust, python, tagged, ignored):
+            path.mkdir(parents=True)
+        clutter = clutter.resolve()
+        node = node.resolve()
+        rust = rust.resolve()
+        python = python.resolve()
+        tagged = tagged.resolve()
+        ignored = ignored.resolve()
+        (node / "package.json").write_text("{}\n", encoding="utf-8")
+        (node / "node_modules/pkg").mkdir(parents=True)
+        (node / "node_modules/pkg/index.js").write_text("x\n", encoding="utf-8")
+        (rust / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+        (rust / "target/debug").mkdir(parents=True)
+        (rust / "target/debug/app").write_bytes(b"rust")
+        (python / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        (python / ".venv").mkdir()
+        (python / ".venv/pyvenv.cfg").write_text("home = test\n", encoding="utf-8")
+        (tagged / "CACHEDIR.TAG").write_bytes(CACHE_TAG)
+        (tagged / "cache").write_bytes(b"tagged")
+        (ignored / "target").mkdir()
+        (ignored / "target/keep").write_text("keep\n", encoding="utf-8")
+        try:
+            (clutter / "linked").symlink_to(node, target_is_directory=True)
+        except OSError:
+            pass
+
+        findings, skipped = discover_artifacts(clutter)
+        assert not skipped
+        found = {item.path.relative_to(clutter).as_posix() for item in findings}
+        assert found == {"node/node_modules", "python/.venv", "rust/target", "tagged"}
+        assert sum(item.bytes for item in findings) == 67
+        dev_args = argparse.Namespace(
+            root=str(clutter),
+            project_only=True,
+            apply=True,
+            yes=True,
+        )
+        assert dev(dev_args) == 0
+        assert not any((clutter / path).exists() for path in found)
+        assert (ignored / "target/keep").is_file()
+    print("ok: developer clutter and Git maintenance contracts")
     return 0
 
 
 def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="cleaner",
-        description="Audit, compact, and safely rewrite repositories.",
+        description="Find developer clutter or safely maintain Git repositories.",
     )
-    parser.add_argument("tool", nargs="?", choices=("git",), default="git")
+    parser.add_argument("tool", nargs="?", choices=("git", "dev"), default="git")
     parser.add_argument(
         "operation_pos",
         nargs="?",
@@ -239,6 +677,14 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
         default="audit",
     )
     parser.add_argument("--repo", help="repository path (default: current directory)")
+    parser.add_argument(
+        "--root", help="developer-clutter scan root (default: current directory)"
+    )
+    parser.add_argument(
+        "--project-only",
+        action="store_true",
+        help="exclude user-level package and language caches",
+    )
     parser.add_argument(
         "--expire",
         default="30.days.ago",
@@ -271,6 +717,23 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
         parser.error("--expire must look like 30.days.ago, 2.weeks.ago, or now")
     if args.operation_pos:
         args.operation = args.operation_pos
+    git_flags = {
+        "--operation",
+        "--repo",
+        "--expire",
+        "--path",
+        "--keep-path",
+        "--replace-text",
+        "--backup",
+        "--force",
+    }
+    if args.tool == "dev" and (
+        args.operation_pos
+        or any(argument.partition("=")[0] in git_flags for argument in arguments)
+    ):
+        parser.error("developer cleanup does not take Git-only options")
+    if args.tool == "git" and (args.root or args.project_only):
+        parser.error("--root and --project-only require cleaner dev")
     return args
 
 
@@ -279,6 +742,8 @@ def main(arguments: list[str] | None = None) -> int:
     if args.self_test:
         return self_test()
     try:
+        if args.tool == "dev":
+            return dev(args)
         repo = repository(args.repo)
         print(color(f"Repository: {repo}", "1;36"))
         return {
@@ -288,7 +753,7 @@ def main(arguments: list[str] | None = None) -> int:
             "rewrite": lambda: rewrite(args, repo),
         }[args.operation]()
     except (ToolError, OSError) as error:
-        print(f"cleaner git: {error}", file=sys.stderr)
+        print(f"cleaner {args.tool}: {error}", file=sys.stderr)
         return 2
 
 

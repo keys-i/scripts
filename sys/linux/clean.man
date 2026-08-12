@@ -23,7 +23,7 @@
     },
     {
       "flag": "--verbose",
-      "label": "Show every filesystem target"
+      "label": "Show completed filesystem targets after apply"
     }
   ]
 }
@@ -63,7 +63,7 @@ password prompts are intentionally disabled inside it.
 | `--all-temp` | include recent current-user temp files |
 | `--logs` | keep only seven days of archived systemd journals |
 | `--store-gc` | collect unreachable Nix and Guix store objects |
-| `--verbose` | print every filesystem target |
+| `--verbose` | print completed filesystem targets after apply |
 | `--apply` | repeat discovery with deletion enabled |
 | `--yes` | accept the script's prompt after TUI confirmation |
 

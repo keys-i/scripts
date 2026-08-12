@@ -113,8 +113,8 @@ Droid, OpenHands, Pi, and Rovo Dev. Market discovery delegates to the live
 private skill.
 
 > **Trust boundary:** Every `market` search or install runs
-> `npx --yes skills ...`. It requires Node.js, `npx`, and network access and
-> may download and execute the current npm package. Review that package and
+> `npx --yes skills@1.5.22 ...`. It requires Node.js, `npx`, and network access and
+> may download and execute the pinned npm package. Review that package and
 > each skill source before continuing.
 
 ## Actions
@@ -174,9 +174,10 @@ retain separate copies. Gemini session listing is current-project scoped.
 ### `market`
 
 Enter a `--query` to search interactively. To preview an install, set
-`--install owner/repository`, optionally `--skill name`, choose an `--agent`,
-and select `--global` for user scope. A preview lists what the live package
-would install; it does not establish that the source is trustworthy.
+`--install owner/repository`, optionally `--skill name`, and select `--global`
+for user scope. The default `all` target uses the installer's supported `*`
+agent target; choose one `--agent` to narrow it. A preview lists what the live
+package would install; it does not establish that the source is trustworthy.
 
 ## Direct CLI
 

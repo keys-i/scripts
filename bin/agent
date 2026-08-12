@@ -28,8 +28,11 @@ from _common import (
     run,
     safe_targets,
     show_steps,
+    target_usage,
     warning,
 )
+
+SKILLS_PACKAGE = "skills@1.5.22"
 
 
 @dataclass(frozen=True)
@@ -498,29 +501,6 @@ def _native_clean_steps(spec: AgentSpec, kind: str) -> list[Step]:
     return []
 
 
-def _target_usage(targets: list[Path]) -> tuple[int, int]:
-    roots: list[Path] = []
-    for target in sorted(set(targets), key=lambda path: (len(path.parts), str(path))):
-        if not any(root == target or root in target.parents for root in roots):
-            roots.append(target)
-
-    items = total_bytes = 0
-    pending = roots[:]
-    while pending:
-        path = pending.pop()
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            continue
-        items += 1
-        if stat.S_ISDIR(metadata.st_mode):
-            with os.scandir(path) as entries:
-                pending.extend(Path(entry.path) for entry in entries)
-        else:
-            total_bytes += metadata.st_size
-    return items, total_bytes
-
-
 def clean(args: argparse.Namespace) -> int:
     heading(f"Agent clean · {args.kind}")
     targets: list[Path] = []
@@ -555,7 +535,7 @@ def clean(args: argparse.Namespace) -> int:
     if not targets and not steps:
         print("No safely automatable local state was found.")
         return 1 if blocked else 0
-    items, total_bytes = _target_usage(targets)
+    items, total_bytes = target_usage(targets)
     print(
         f"Plan: {items} local item(s) ({total_bytes:,} bytes) across "
         f"{len(targets)} target(s); {len(steps)} native operation(s) "
@@ -717,12 +697,12 @@ def market(args: argparse.Namespace) -> int:
     if npx is None:
         raise ToolError("npx is required; install a current Node.js release")
     if args.install:
-        if args.agent == "all" and os.environ.get("SCRIPTS_TUI"):
-            raise ToolError("choose one target agent before installing a skill")
-        command = [npx, "--yes", "skills", "add", args.install]
+        command = [npx, "--yes", SKILLS_PACKAGE, "add", args.install]
         if args.skill:
             command.extend(("--skill", args.skill))
-        if args.agent != "all":
+        if args.agent == "all":
+            command.extend(("--agent", "*"))
+        else:
             spec = choose_agents(args.agent)[0]
             if spec.skill_agent is None:
                 raise ToolError(f"{spec.label} does not natively load Agent Skills")
@@ -749,7 +729,7 @@ def market(args: argparse.Namespace) -> int:
 
     if not args.query and os.environ.get("SCRIPTS_TUI"):
         raise ToolError("enter a market query in the wizard")
-    command = [npx, "--yes", "skills", "find"]
+    command = [npx, "--yes", SKILLS_PACKAGE, "find"]
     if args.query:
         command.append(args.query)
     heading("Indexed Agent Skills catalog")
@@ -790,6 +770,37 @@ def self_test() -> int:
     assert all(
         spec.skill_agent is not None for key, spec in agents.items() if key != "aider"
     )
+    add = ["npx", "--yes", SKILLS_PACKAGE, "add", "owner/repository", "--agent"]
+    market_cases = (
+        (
+            ["market", "--install", "owner/repository"],
+            [*add, "*", "--list"],
+        ),
+        (
+            ["market", "--install", "owner/repository", "--agent", "codex"],
+            [*add, "codex", "--list"],
+        ),
+        (
+            ["market", "--install", "owner/repository", "--apply", "--yes"],
+            [*add, "*", "--yes"],
+        ),
+        (
+            ["market", "--query", "python"],
+            ["npx", "--yes", SKILLS_PACKAGE, "find", "python"],
+        ),
+    )
+    with (
+        patch(f"{__name__}.find_program", return_value="npx"),
+        patch(
+            f"{__name__}.run",
+            return_value=SimpleNamespace(returncode=0),
+        ) as market_run,
+    ):
+        for arguments, _expected in market_cases:
+            assert market(parse_args(arguments)) == 0
+    assert [call.args[0] for call in market_run.call_args_list] == [
+        expected for _arguments, expected in market_cases
+    ]
     assert _read_json_lines('{"id":"one"}\n{"id":"two"}') == [
         {"id": "one"},
         {"id": "two"},
@@ -888,7 +899,7 @@ def self_test() -> int:
         (usage / "one").write_bytes(b"123")
         nested_file = nested / "two"
         nested_file.write_bytes(b"45")
-        assert _target_usage([usage, nested_file]) == (4, 5)
+        assert target_usage([usage, nested_file]) == (4, 5)
         partial = AgentSpec(
             "fixture",
             "Fixture",

@@ -1,11 +1,11 @@
 ---
 {
-  "summary": "Audit, garbage-collect, clean dangling Git objects, and rewrite history safely.",
+  "summary": "Find and remove developer clutter, or audit and maintain Git repositories safely.",
   "platform": "any",
   "privilege": "user",
   "applyFlag": "--apply",
   "yesFlag": "--yes",
-  "applyWhen": ["gc", "dangling", "rewrite"],
+  "applyWhen": ["dev", "gc", "dangling", "rewrite"],
   "parameters": [
     {
       "name": "tool",
@@ -13,7 +13,8 @@
       "required": true,
       "default": "git",
       "choices": [
-        {"value": "git", "label": "Git repository"}
+        {"value": "git", "label": "Git repository"},
+        {"value": "dev", "label": "Developer caches and generated project data"}
       ]
     },
     {
@@ -21,6 +22,7 @@
       "label": "Operation",
       "required": true,
       "default": "audit",
+      "when": {"tool": ["git"]},
       "choices": [
         {"value": "audit", "label": "Audit object storage and unreachable objects"},
         {"value": "gc", "label": "Garbage collect with a safe retention window"},
@@ -32,54 +34,106 @@
       "name": "repo",
       "label": "Repository",
       "flag": "--repo",
+      "when": {"tool": ["git"]},
+      "placeholder": "defaults to the working directory"
+    },
+    {
+      "name": "root",
+      "label": "Developer-project scan root",
+      "flag": "--root",
+      "when": {"tool": ["dev"]},
       "placeholder": "defaults to the working directory"
     },
     {
       "name": "expire",
       "label": "Unreachable-object retention",
       "flag": "--expire",
-      "when": {"operation": ["gc", "dangling"]},
+      "when": {"tool": ["git"], "operation": ["gc", "dangling"]},
       "placeholder": "30.days.ago"
     },
     {
       "name": "path",
       "label": "History path",
       "flag": "--path",
-      "when": {"operation": ["rewrite"]},
+      "when": {"tool": ["git"], "operation": ["rewrite"]},
       "placeholder": "file or directory to remove from every commit"
     },
     {
       "name": "replace-text",
       "label": "Replacement expressions file",
       "flag": "--replace-text",
-      "when": {"operation": ["rewrite"]},
+      "when": {"tool": ["git"], "operation": ["rewrite"]},
       "placeholder": "git-filter-repo replace-text file"
     },
     {
       "name": "backup",
       "label": "Pre-rewrite bundle",
       "flag": "--backup",
-      "when": {"operation": ["rewrite"]},
+      "when": {"tool": ["git"], "operation": ["rewrite"]},
       "placeholder": "defaults inside .git"
     }
   ],
   "options": [
     {
+      "flag": "--project-only",
+      "label": "Exclude user-level language and package caches",
+      "when": {"tool": ["dev"]}
+    },
+    {
       "flag": "--keep-path",
       "label": "Keep only the history path instead of removing it",
-      "when": {"operation": ["rewrite"]}
+      "when": {"tool": ["git"], "operation": ["rewrite"]}
     },
     {
       "flag": "--force",
       "label": "Allow immediate expiry or bypass the fresh-clone guard",
-      "when": {"operation": ["gc", "dangling", "rewrite"]},
+      "when": {"tool": ["git"], "operation": ["gc", "dangling", "rewrite"]},
       "warning": "Force allows permanent immediate pruning and bypasses git-filter-repo's fresh-clone guard. The working tree must still be clean."
     }
   ]
 }
 ---
 
-# Git repository cleaner
+# Developer and Git cleaner
+
+`cleaner dev` inventories regenerable project outputs and user-level language
+caches. `cleaner git` keeps the existing guarded repository maintenance and
+history-rewrite workflow.
+
+## Developer clutter
+
+The default read-only scan starts at the working directory. Set `--root` to a
+project parent such as `~/Coding`; choose a home directory only when a full
+user scan is worth the extra time. Results include logical size and entry count.
+
+Project cleanup recognizes outputs only beside matching manifests. Coverage
+includes Node.js dependencies and framework caches, Python tool caches and
+reconstructable virtual environments, Rust and Maven `target`, Gradle and CMake
+`build`, Swift `.build`, .NET `bin`/`obj`, Dart, Elixir, Haskell, Zig, and
+Terraform outputs, Composer `vendor`, and CocoaPods `Pods`. A directory with a
+valid `CACHEDIR.TAG` signature is also shown as explicitly regenerable cache
+data.
+
+Unless `--project-only` is selected, the inventory also asks installed Go, npm,
+pnpm, pip, and uv tools for their active cache locations. Apply uses each
+tool's native cleanup command. It additionally recognizes the user-owned Cargo,
+Gradle, Maven, and NuGet cache locations without deleting tool configuration,
+installed binaries, or source projects.
+
+> **Review every path:** A cache tag is a strong hint, not authority by itself.
+> The scanner never follows symlinks, crosses a filesystem boundary, deletes a
+> directory based only on a generic name, or scans hidden application state when
+> the selected root is the home directory. Close package managers, compilers,
+> editors, and builds before applying.
+
+```sh
+cleaner dev
+cleaner dev --root ~/Coding
+cleaner dev --root ~/Coding --project-only
+cleaner dev --root ~/Coding --apply
+```
+
+## Git repositories
 
 `cleaner git` replaces error-prone `filter-branch` recipes with
 `git-filter-repo`, keeps normal garbage collection conservative, and exposes
@@ -131,10 +185,13 @@ cleaner git rewrite --replace-text replacements.txt
 ```
 
 Nothing mutates without `--apply`. Direct applies require typing `APPLY`; the
-shared TUI confirms with `CLEAN` and then supplies `--apply --yes`.
+shared TUI confirms with `CLEAN` and then supplies `--apply --yes`. Developer
+apply repeats discovery, so the preview and final target set can differ if files
+change between runs.
 
 ## Exit status
 
-`0` means the audit or requested maintenance completed. `2` means the
+`0` means the inventory or requested maintenance completed. `1` means a
+developer scan was incomplete or a cleanup command failed. `2` means the root,
 repository, arguments, dependency, backup, or Git operation was unsafe or
 failed. Invalid command-line syntax also exits `2`.

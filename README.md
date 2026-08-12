@@ -48,7 +48,9 @@ From a local checkout, use the shorter equivalents:
 ```
 
 Cleanup scripts always preview first and require explicit confirmation before
-applying changes. The [agent research](docs/agent-tools.md) records supported
+applying changes. `cleaner dev --root ~/Coding` inventories manifest-backed
+build output, dependency trees, and language caches before offering removal.
+The [agent research](docs/agent-tools.md) records supported
 clients and cleanup limits; the [security research](docs/security-research.md)
 explains scanner, CVE, KEV, and host-check coverage; the
 [Slurm example](examples/slurm.toml) shows every resource and command option.
