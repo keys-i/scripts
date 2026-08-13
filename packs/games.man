@@ -1,6 +1,6 @@
 ---
 {
-  "summary": "List or launch installed terminal games from one command.",
+  "summary": "Play eleven original native terminal games from one command.",
   "platform": "any",
   "privilege": "user",
   "executable": "games",
@@ -14,25 +14,26 @@
       "choices": [
         {"value": "list", "label": "List games"},
         {"value": "info", "label": "Show game details"},
-        {"value": "run", "label": "Launch a game"}
+        {"value": "run", "label": "Play a game"}
       ]
     },
     {
       "name": "game",
       "label": "Game",
       "required": true,
-      "default": "2048",
+      "default": "merge",
       "choices": [
-        {"value": "2048", "label": "2048"},
-        {"value": "balatro", "label": "Balatro"},
-        {"value": "botany", "label": "Botany"},
-        {"value": "brogue", "label": "Brogue"},
-        {"value": "pokete", "label": "Pokete"},
-        {"value": "raycaster", "label": "Raycaster"},
-        {"value": "rebels", "label": "Rebels in the Sky"},
-        {"value": "snake", "label": "Snake"},
-        {"value": "tttui", "label": "Typing test"},
-        {"value": "wordle", "label": "Wordle"}
+        {"value": "cards", "label": "Hand Threshold"},
+        {"value": "delve", "label": "Delve"},
+        {"value": "glyphs", "label": "Five Glyphs"},
+        {"value": "keybed", "label": "Keybed"},
+        {"value": "merge", "label": "Number Merge"},
+        {"value": "orbit", "label": "Orbit Court"},
+        {"value": "scout", "label": "Field Scout"},
+        {"value": "seedling", "label": "Seedling"},
+        {"value": "serpent", "label": "Serpent Run"},
+        {"value": "sprint", "label": "Type Sprint"},
+        {"value": "vector", "label": "Exit Vector"}
       ],
       "when": {"action": ["info", "run"]}
     },
@@ -46,23 +47,30 @@
         {"value": "--json", "label": "JSON"}
       ],
       "when": {"action": ["list"]}
+    },
+    {
+      "name": "seed",
+      "label": "Reproducible seed",
+      "flag": "--seed",
+      "placeholder": "unsigned integer",
+      "when": {"action": ["run"]}
     }
   ]
 }
 ---
 # Games
 
-`games` is the terminal-game launcher from
+`games` is the native clean-room terminal arcade from
 [`keys-i/tools`](https://github.com/keys-i/tools). The `action` may be `list`,
-`info`, or `run`. Choose a `game` for details or launch; choose a `format` of
-`--plain` or `--json` when listing.
+`info`, or `run`. Choose a `game` for details or play; choose a `format` of
+`--plain` or `--json` when listing. An optional unsigned `--seed` reproduces
+the randomized setup; elapsed time and input timing remain live.
 
 Interactive games cannot run inside the dashboard output pane. Selecting
-`run` shows the exact direct-terminal command. The launcher resolves one
-installed executable and starts it without a shell. Missing games produce the
-upstream source URL instead of downloading anything.
+`run` shows the exact direct-terminal command. All eleven modes are built into
+the Rust binary; no external game, shell, Python process, network service, or
+download is involved.
 
-Additional game packs are bounded `*.game` manifests loaded by the Rust tool
-from `TOOLS_GAME_PATH` or the user data directory. This scripts pack contains
-only the shared manual and typed UI contract; it does not duplicate launcher
-logic. The prepared `keys-tools` PyPI package has not been published.
+This scripts pack contains only the shared manual and typed UI contract; it
+does not duplicate gameplay or argument logic. The prepared `keys-tools` PyPI
+package has not been published.
