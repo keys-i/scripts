@@ -48,6 +48,7 @@ From a local checkout, use the shorter equivalents:
 ./run.sh fetch --plain
 ./run.sh games list --json
 ./run.sh science snapshot orbit --json
+./run.sh screensaver snapshot rain --seed 1 --json
 ```
 
 Cleanup scripts always preview first and require explicit confirmation before
