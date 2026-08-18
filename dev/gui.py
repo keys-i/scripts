@@ -193,6 +193,7 @@ class RunSelection:
     script: ScriptSpec
     flags: tuple[str, ...]
     working_directory: Path
+    routing_tokens: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1112,6 +1113,32 @@ class RunWizard(ModalScreen[RunSelection | None]):
         )
         return tuple(arguments)
 
+    def routing_tokens(self) -> tuple[str, ...]:
+        tokens: list[str] = []
+        selected = self.controller_values()
+        for index, parameter in enumerate(self.script.parameters):
+            if not conditions_match(parameter.when, selected):
+                continue
+            widget = self.query_one(f"#parameter-{index}", Input | Select)
+            value = (
+                widget.value.strip()
+                if isinstance(widget, Input)
+                else ""
+                if widget.value is Select.NULL
+                else str(widget.value)
+            )
+            if value and parameter.choices:
+                tokens.append(value)
+            if value and parameter.flag is not None:
+                tokens.append(parameter.flag)
+        tokens.extend(
+            option.flag
+            for index, option in enumerate(self.script.options)
+            if conditions_match(option.when, selected)
+            and self.query_one(f"#option-{index}", Checkbox).value
+        )
+        return tuple(dict.fromkeys(tokens))
+
     def working_directory(self) -> Path | None:
         value = self.query_one("#cwd", Input).value.strip()
         if not value:
@@ -1142,9 +1169,9 @@ class RunWizard(ModalScreen[RunSelection | None]):
         self.query_one("#wizard-next", Button).label = (
             (
                 "Preview"
-                if self.script.needs_apply(arguments or ())
+                if self.script.needs_apply(self.routing_tokens())
                 else "Show command"
-                if self.script.needs_direct_terminal(arguments or ())
+                if self.script.needs_direct_terminal(self.routing_tokens())
                 else "Run"
             )
             if self.step == 2
@@ -1184,14 +1211,16 @@ class RunWizard(ModalScreen[RunSelection | None]):
                 and parameter.warning
             )
             caution = "\n".join(f"- {warning}" for warning in warnings)
-            needs_apply = self.script.needs_apply(arguments)
+            routing_tokens = self.routing_tokens()
+            needs_apply = self.script.needs_apply(routing_tokens)
             flow = (
                 "This runs a read-only preview first, then shows the apply "
                 "command for a direct interactive terminal."
-                if needs_apply and self.script.needs_direct_terminal(arguments)
+                if needs_apply
+                and self.script.needs_direct_terminal(routing_tokens)
                 else "This interactive tool needs the terminal. Confirm to show the "
                 "exact command to run."
-                if self.script.needs_direct_terminal(arguments)
+                if self.script.needs_direct_terminal(routing_tokens)
                 else "This runs a read-only preview first. Apply repeats "
                 "discovery with the same settings, so targets may change "
                 "between runs. A successful preview must be followed by `CLEAN`."
@@ -1210,7 +1239,14 @@ class RunWizard(ModalScreen[RunSelection | None]):
 
         arguments = self.selected_arguments()
         if arguments is not None:
-            self.dismiss(RunSelection(self.script, arguments, directory))
+            self.dismiss(
+                RunSelection(
+                    self.script,
+                    arguments,
+                    directory,
+                    self.routing_tokens(),
+                )
+            )
 
 
 class ConfirmApply(ModalScreen[bool]):
@@ -2140,9 +2176,9 @@ class ScriptsApp(App[None]):
     @work(group="script", exclusive=True)
     async def run_selection(self, selection: RunSelection) -> None:
         try:
-            needs_apply = selection.script.needs_apply(selection.flags)
+            needs_apply = selection.script.needs_apply(selection.routing_tokens)
             if (
-                selection.script.needs_direct_terminal(selection.flags)
+                selection.script.needs_direct_terminal(selection.routing_tokens)
                 and not needs_apply
             ):
                 command = display_command(
@@ -2165,7 +2201,7 @@ class ScriptsApp(App[None]):
                 return
             assert selection.script.apply_flag is not None
             assert selection.script.yes_flag is not None
-            if selection.script.needs_direct_terminal(selection.flags):
+            if selection.script.needs_direct_terminal(selection.routing_tokens):
                 direct_flags = (*selection.flags, selection.script.apply_flag)
                 command = display_command(command_for(selection.script, direct_flags))
                 self.query_one("#activity-heading", Label).update(
@@ -2308,8 +2344,8 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             "privilege": "user",
             "applyFlag": "--apply",
             "yesFlag": "--yes",
-            "applyWhen": ["fix"],
-            "directWhen": ["fix"],
+            "applyWhen": ["fix", "--query"],
+            "directWhen": ["--force"],
             "findingExitCodes": [1],
             "launchable": False,
             "parameters": [
@@ -2339,11 +2375,18 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
                     ],
                 },
             ],
+            "options": [
+                {
+                    "flag": "--force",
+                    "label": "Force",
+                    "when": {"action": ["fix"]},
+                }
+            ],
         }
         help_path = script_path.with_name("probe.py.man")
         probe_markdown = (
-            "# Probe\n\n`action`, `--query`, `format`, `--apply`, and `--yes` "
-            "exercise typed parameters.\n"
+            "# Probe\n\n`action`, `--query`, `format`, `--force`, `--apply`, "
+            "and `--yes` exercise typed parameters.\n"
         )
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
@@ -2356,7 +2399,17 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert not probe.launchable
         assert not probe.needs_apply(("show",))
         assert probe.needs_apply(("fix",))
-        assert probe.needs_direct_terminal(("fix",))
+        assert probe.needs_apply(("--query",))
+        assert probe.needs_direct_terminal(("--force",))
+        assert not probe.needs_direct_terminal(("fix",))
+        safe_selection = RunSelection(
+            probe,
+            ("show", "--query", "fix", "text"),
+            contract_root,
+            ("show", "text"),
+        )
+        assert not probe.needs_apply(safe_selection.routing_tokens)
+        assert not probe.needs_direct_terminal(safe_selection.routing_tokens)
         assert probe.has_findings(1) and not probe.has_findings(2)
         assert not conditions_match(
             probe.parameters[1].when,
@@ -2483,16 +2536,24 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert isinstance(conditional_wizard, RunWizard)
         assert conditional_wizard.query_one("#parameter-2", Select).value is Select.NULL
         hidden_query = conditional_wizard.query_one("#parameter-1", Input)
-        hidden_query.value = "ignored"
+        hidden_query.value = "fix"
         assert not conditional_wizard.query_one("#parameter-row-1").display
         assert conditional_wizard.selected_arguments() == ("show",)
+        assert conditional_wizard.routing_tokens() == ("show",)
         conditional_wizard.query_one("#parameter-0", Select).value = "fix"
         await pilot.pause()
         assert conditional_wizard.query_one("#parameter-row-1").display
         assert conditional_wizard.selected_arguments() == (
             "fix",
             "--query",
-            "ignored",
+            "fix",
+        )
+        assert conditional_wizard.routing_tokens() == ("fix", "--query")
+        conditional_wizard.query_one("#option-0", Checkbox).value = True
+        assert conditional_wizard.routing_tokens() == (
+            "fix",
+            "--query",
+            "--force",
         )
         await pilot.press("escape")
         await pilot.pause()

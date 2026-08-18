@@ -1,0 +1,158 @@
+---
+{
+  "summary": "Read text, inspect tables, present slides, paint text canvases, and run timers locally.",
+  "platform": "any",
+  "privilege": "user",
+  "executable": "apps",
+  "directWhen": ["open"],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "snapshot",
+      "choices": [
+        {"value": "snapshot", "label": "Print a snapshot"},
+        {"value": "open", "label": "Open interactive app"}
+      ]
+    },
+    {
+      "name": "app",
+      "label": "App",
+      "required": true,
+      "default": "read",
+      "choices": [
+        {"value": "read", "label": "Text reader"},
+        {"value": "table", "label": "CSV or TSV table"},
+        {"value": "slides", "label": "Markdown slides"},
+        {"value": "paint", "label": "Text canvas"},
+        {"value": "timer", "label": "Countdown timer"}
+      ]
+    },
+    {
+      "name": "input",
+      "label": "Input file",
+      "required": true,
+      "placeholder": "notes.md, data.csv, or talk.md",
+      "when": {"app": ["read", "table", "slides"]}
+    },
+    {
+      "name": "canvas",
+      "label": "Existing text canvas",
+      "placeholder": "optional drawing.txt",
+      "when": {"app": ["paint"]}
+    },
+    {
+      "name": "find",
+      "label": "Find text",
+      "flag": "--find",
+      "placeholder": "case-insensitive query",
+      "when": {"app": ["read"]}
+    },
+    {
+      "name": "delimiter",
+      "label": "Table delimiter",
+      "flag": "--delimiter",
+      "choices": [
+        {"value": "comma", "label": "Comma"},
+        {"value": "tab", "label": "Tab"}
+      ],
+      "when": {"app": ["table"]}
+    },
+    {
+      "name": "limit",
+      "label": "Snapshot rows or lines",
+      "flag": "--limit",
+      "placeholder": "1 to 1000, default 20",
+      "when": {"action": ["snapshot"], "app": ["read", "table"]}
+    },
+    {
+      "name": "page",
+      "label": "Slide page",
+      "flag": "--page",
+      "placeholder": "1 to 512, default 1",
+      "when": {"app": ["slides"]}
+    },
+    {
+      "name": "width",
+      "label": "New canvas width",
+      "flag": "--width",
+      "placeholder": "1 to 240, default 40",
+      "when": {"app": ["paint"]}
+    },
+    {
+      "name": "height",
+      "label": "New canvas height",
+      "flag": "--height",
+      "placeholder": "1 to 80, default 16",
+      "when": {"app": ["paint"]}
+    },
+    {
+      "name": "output",
+      "label": "New paint output",
+      "flag": "--output",
+      "placeholder": "new drawing.txt",
+      "when": {"action": ["open"], "app": ["paint"]}
+    },
+    {
+      "name": "seconds",
+      "label": "Timer seconds",
+      "flag": "--seconds",
+      "required": true,
+      "placeholder": "1 to 86400",
+      "when": {"app": ["timer"]}
+    },
+    {
+      "name": "elapsed",
+      "label": "Elapsed seconds",
+      "flag": "--elapsed",
+      "placeholder": "0 to timer duration",
+      "when": {"action": ["snapshot"], "app": ["timer"]}
+    },
+    {
+      "name": "label",
+      "label": "Timer label",
+      "flag": "--label",
+      "placeholder": "focus",
+      "when": {"app": ["timer"]}
+    },
+    {
+      "name": "format",
+      "label": "Snapshot format",
+      "required": true,
+      "default": "--plain",
+      "choices": [
+        {"value": "--plain", "label": "Plain text"},
+        {"value": "--json", "label": "JSON"}
+      ],
+      "when": {"action": ["snapshot"]}
+    }
+  ]
+}
+---
+# Apps
+
+`apps` is the native local terminal workbench from
+[`keys-i/tools`](https://github.com/keys-i/tools). It owns five focused modes:
+`read` searches UTF-8 text, `table` parses quoted CSV or TSV, `slides` presents
+Markdown pages separated by `---`, `paint` edits a plain-text canvas, and
+`timer` runs a monotonic countdown.
+
+The `action` selects `snapshot` or `open`; `app` selects the mode. Supply an
+`input` for read, table, or slides, or an optional paint `canvas`. Reader search
+uses `--find`; tables accept `--delimiter`; read/table snapshots accept
+`--limit`; slides accept `--page`. A new paint canvas accepts `--width` and
+`--height`; do not set them with an existing canvas. Interactive paint accepts
+`--output` and refuses to replace an existing file. Timers require `--seconds`
+and accept snapshot `--elapsed` plus `--label`. Choose the snapshot `format` as
+plain text or JSON.
+
+All input is opened once and capped at 32 MiB. Tables stop at 100,000 rows, 256
+columns, and two million cells. Paint saves a completed temporary file through
+an atomic no-overwrite link. There is no network, TLS, browser, PDF codec,
+Wayland compositor, PTY server, plugin, Python process, shell, or upstream
+executable.
+
+Keyboard controls are shown in every mode. `q`, Escape, or Ctrl-C exits and the
+terminal is restored. This pack contains only the typed UI contract; the
+prepared `keys-tools` PyPI package has not been published.

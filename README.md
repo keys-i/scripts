@@ -46,6 +46,7 @@ From a local checkout, use the shorter equivalents:
 ./run.sh man disk
 ./run.sh clean
 ./run.sh fetch --plain
+./run.sh apps snapshot timer --seconds 1500 --elapsed 60 --json
 ./run.sh games list --json
 ./run.sh science snapshot orbit --json
 ./run.sh screensaver snapshot rain --seed 1 --json
