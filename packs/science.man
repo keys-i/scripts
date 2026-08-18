@@ -1,0 +1,81 @@
+---
+{
+  "summary": "Explore planetary orbits, VCD waveforms, and point clouds with one native offline tool.",
+  "platform": "any",
+  "privilege": "user",
+  "executable": "science",
+  "directWhen": ["open"],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "snapshot",
+      "choices": [
+        {"value": "snapshot", "label": "Print a snapshot"},
+        {"value": "open", "label": "Open interactive view"}
+      ]
+    },
+    {
+      "name": "view",
+      "label": "View",
+      "required": true,
+      "default": "orbit",
+      "choices": [
+        {"value": "orbit", "label": "Planetary orbits"},
+        {"value": "wave", "label": "VCD waveforms"},
+        {"value": "cloud", "label": "PLY or splat cloud"}
+      ]
+    },
+    {
+      "name": "input",
+      "label": "Input file",
+      "required": true,
+      "placeholder": "capture.vcd, scan.ply, or scan.splat",
+      "when": {"view": ["wave", "cloud"]}
+    },
+    {
+      "name": "days",
+      "label": "Days from now",
+      "flag": "--days",
+      "placeholder": "finite number, default 0",
+      "when": {"view": ["orbit"]}
+    },
+    {
+      "name": "format",
+      "label": "Snapshot format",
+      "required": true,
+      "default": "--plain",
+      "choices": [
+        {"value": "--plain", "label": "Plain text"},
+        {"value": "--json", "label": "JSON"}
+      ],
+      "when": {"action": ["snapshot"]}
+    }
+  ]
+}
+---
+# Science
+
+`science` is the native offline science workbench from
+[`keys-i/tools`](https://github.com/keys-i/tools). It owns three focused views:
+JPL-based approximate planetary positions for 1800-2050, bounded VCD logic
+traces, and streamed ASCII or little-endian binary PLY and 32-byte `.splat`
+point clouds.
+
+Choose `snapshot` for stable plain or JSON output inside Scripts. Choose `open`
+to show the exact command for an interactive terminal. Wave input is capped at
+64 MiB and 2,000,000 distinct changes. Clouds are capped at 50,000,000 points;
+full statistics are single-pass and rendering retains at most 60,000 evenly
+spaced points.
+
+Wave parsing preserves distinct multi-bit values and drops only consecutive
+identical states.
+
+The `action` selects `snapshot` or `open`; `view` selects `orbit`, `wave`, or
+`cloud`. Supply an `input` file for wave and cloud, optionally offset orbit by
+`days` through `--days`, and choose the snapshot `format` as plain text or JSON.
+
+No network service, serial driver, shell, Python process, upstream executable,
+or copied asset is involved. The prepared `keys-tools` PyPI package has not
+been published.

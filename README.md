@@ -47,6 +47,7 @@ From a local checkout, use the shorter equivalents:
 ./run.sh clean
 ./run.sh fetch --plain
 ./run.sh games list --json
+./run.sh science snapshot orbit --json
 ```
 
 Cleanup scripts always preview first and require explicit confirmation before
