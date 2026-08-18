@@ -1,0 +1,65 @@
+---
+{
+  "summary": "Inspect and operate Docker, Apple containers, or Slurm from one native dashboard.",
+  "platform": "any",
+  "privilege": "user",
+  "executable": "lazybox",
+  "directWhen": ["open"],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "snapshot",
+      "choices": [
+        {"value": "snapshot", "label": "Snapshot inventory"},
+        {"value": "open", "label": "Open interactive dashboard"}
+      ]
+    },
+    {
+      "name": "backend",
+      "label": "Backend",
+      "flag": "--backend",
+      "required": true,
+      "default": "auto",
+      "choices": [
+        {"value": "auto", "label": "First responding backend"},
+        {"value": "docker", "label": "Docker Engine"},
+        {"value": "apple", "label": "Apple Container"},
+        {"value": "slurm", "label": "Slurm"}
+      ]
+    },
+    {
+      "name": "format",
+      "label": "Snapshot format",
+      "required": true,
+      "default": "--plain",
+      "choices": [
+        {"value": "--plain", "label": "Plain text"},
+        {"value": "--json", "label": "JSON"}
+      ],
+      "when": {"action": ["snapshot"]}
+    }
+  ]
+}
+---
+# Lazybox
+
+`lazybox` is the native operations dashboard from
+[`keys-i/tools`](https://github.com/keys-i/tools). It owns its terminal UI and
+directly queries the selected installed backend; it does not launch Lazydocker,
+Lazycontainer, or Lazyslurm.
+
+The `action` may be `snapshot` or `open`. `snapshot` is safe inside the Scripts
+output pane and supports stable plain or JSON output. `open` needs its own
+terminal, so the dashboard shows the exact direct command. Automatic selection
+tries Docker, Apple Container, then Slurm and uses the first backend whose
+inventory command succeeds.
+Choose a `backend` with `--backend auto|docker|apple|slurm`; snapshots accept a
+`format` of `--plain` or `--json`.
+
+The dashboard strips control characters from backend output and never invokes
+a shell. Start, stop, restart, and Slurm cancellation act only on the selected
+item and require confirmation. Backend calls stop after 30 seconds and capture
+at most 8 MiB of combined output. Install and authenticate the backend CLI
+separately. The prepared `keys-tools` PyPI package has not been published.
