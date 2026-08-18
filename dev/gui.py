@@ -1165,7 +1165,6 @@ class RunWizard(ModalScreen[RunSelection | None]):
             "wizard-review",
         )[self.step]
         self.query_one("#wizard-back", Button).disabled = self.step == 0
-        arguments = self.selected_arguments() if self.step == 2 else ()
         self.query_one("#wizard-next", Button).label = (
             (
                 "Preview"
@@ -1216,8 +1215,7 @@ class RunWizard(ModalScreen[RunSelection | None]):
             flow = (
                 "This runs a read-only preview first, then shows the apply "
                 "command for a direct interactive terminal."
-                if needs_apply
-                and self.script.needs_direct_terminal(routing_tokens)
+                if needs_apply and self.script.needs_direct_terminal(routing_tokens)
                 else "This interactive tool needs the terminal. Confirm to show the "
                 "exact command to run."
                 if self.script.needs_direct_terminal(routing_tokens)
