@@ -1,0 +1,76 @@
+---
+{
+  "summary": "Play eleven original native terminal games from one command.",
+  "platform": "any",
+  "privilege": "user",
+  "executable": "games",
+  "directWhen": ["run"],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "list",
+      "choices": [
+        {"value": "list", "label": "List games"},
+        {"value": "info", "label": "Show game details"},
+        {"value": "run", "label": "Play a game"}
+      ]
+    },
+    {
+      "name": "game",
+      "label": "Game",
+      "required": true,
+      "default": "merge",
+      "choices": [
+        {"value": "cards", "label": "Hand Threshold"},
+        {"value": "delve", "label": "Delve"},
+        {"value": "glyphs", "label": "Five Glyphs"},
+        {"value": "keybed", "label": "Keybed"},
+        {"value": "merge", "label": "Number Merge"},
+        {"value": "orbit", "label": "Orbit Court"},
+        {"value": "scout", "label": "Field Scout"},
+        {"value": "seedling", "label": "Seedling"},
+        {"value": "serpent", "label": "Serpent Run"},
+        {"value": "sprint", "label": "Type Sprint"},
+        {"value": "vector", "label": "Exit Vector"}
+      ],
+      "when": {"action": ["info", "run"]}
+    },
+    {
+      "name": "format",
+      "label": "List format",
+      "required": true,
+      "default": "--plain",
+      "choices": [
+        {"value": "--plain", "label": "Plain text"},
+        {"value": "--json", "label": "JSON"}
+      ],
+      "when": {"action": ["list"]}
+    },
+    {
+      "name": "seed",
+      "label": "Reproducible seed",
+      "flag": "--seed",
+      "placeholder": "unsigned integer",
+      "when": {"action": ["run"]}
+    }
+  ]
+}
+---
+# Games
+
+`games` is the native clean-room terminal arcade from
+[`keys-i/tools`](https://github.com/keys-i/tools). The `action` may be `list`,
+`info`, or `run`. Choose a `game` for details or play; choose a `format` of
+`--plain` or `--json` when listing. An optional unsigned `--seed` reproduces
+the randomized setup; elapsed time and input timing remain live.
+
+Interactive games cannot run inside the dashboard output pane. Selecting
+`run` shows the exact direct-terminal command. All eleven modes are built into
+the Rust binary; no external game, shell, Python process, network service, or
+download is involved.
+
+This scripts pack contains only the shared manual and typed UI contract; it
+does not duplicate gameplay or argument logic. The prepared `keys-tools` PyPI
+package has not been published.

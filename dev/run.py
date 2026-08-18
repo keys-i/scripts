@@ -12,9 +12,10 @@ from pathlib import Path
 
 from _manual import PRIVILEGE_LABELS
 
-SEARCH_DIRS = ("bin", "dev", "sys")
+SEARCH_DIRS = ("bin", "dev", "sys", "packs")
 MAN_SUFFIX = ".man"
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*")
+COMMAND_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 SCRIPT_SUFFIXES = {".bat", ".cmd", ".ps1", ".py", ".sh"}
 
 
@@ -63,6 +64,7 @@ def catalog(root: Path) -> list[dict[str, object]]:
         privilege = value.get("privilege")
         apply_flag = value.get("applyFlag")
         launchable = value.get("launchable", True)
+        executable = value.get("executable")
         if platform not in {"any", "linux", "macos", "windows"}:
             raise LauncherError(f"invalid platform in {help_path}")
         if not isinstance(summary, str) or not summary.strip():
@@ -75,16 +77,26 @@ def catalog(root: Path) -> list[dict[str, object]]:
             raise LauncherError(f"invalid apply flag in {help_path}")
         if not isinstance(launchable, bool):
             raise LauncherError(f"invalid launchable value in {help_path}")
-        script = Path(str(help_path)[: -len(MAN_SUFFIX)])
-        if script.is_symlink() or not script.is_file():
-            raise LauncherError(f"unsafe or missing script for {help_path}")
-        script_id = script.relative_to(root).as_posix()
+        if executable is not None and (
+            not isinstance(executable, str) or not COMMAND_NAME.fullmatch(executable)
+        ):
+            raise LauncherError(f"invalid executable in {help_path}")
+        adjacent = Path(str(help_path)[: -len(MAN_SUFFIX)])
+        if executable is None:
+            if adjacent.is_symlink() or not adjacent.is_file():
+                raise LauncherError(f"unsafe or missing script for {help_path}")
+            script = adjacent
+            script_id = script.relative_to(root).as_posix()
+        else:
+            script = Path(executable)
+            script_id = adjacent.relative_to(root).as_posix()
         alias = script.stem if script.suffix.lower() in SCRIPT_SUFFIXES else script.name
         entries.append(
             {
                 "id": script_id,
                 "alias": alias,
                 "path": script,
+                "external": executable is not None,
                 "manual": help_path,
                 "platform": platform,
                 "privilege": privilege,
@@ -147,14 +159,20 @@ def show(entries: list[dict[str, object]], platform: str) -> None:
             else str(entry["id"]),
             str(entry["id"]),
             str(entry["summary"]),
+            entry,
         )
         for entry in usable
     ]
     width = max((len(row[0]) for row in rows), default=4)
     print(f"Usable scripts on {platform}:\n")
-    for name, script_id, summary in rows:
+    for name, script_id, summary, entry in rows:
         location = "" if name == script_id else f"  [{script_id}]"
-        print(f"  {name:<{width}}{location}\n    {summary}")
+        missing = (
+            f"  [install {entry['path']}]"
+            if entry["external"] and shutil.which(str(entry["path"])) is None
+            else ""
+        )
+        print(f"  {name:<{width}}{location}{missing}\n    {summary}")
 
 
 def support_matrix(entries: list[dict[str, object]]) -> str:
@@ -180,6 +198,14 @@ def support_matrix(entries: list[dict[str, object]]) -> str:
 
 def launch(entry: dict[str, object], arguments: list[str]) -> None:
     script = Path(str(entry["path"]))
+    if entry["external"]:
+        executable = shutil.which(str(script))
+        if not executable:
+            raise LauncherError(
+                f"{script} is not installed; see './run.sh man {entry['alias']}'"
+            )
+        os.execvp(executable, [executable, *arguments])
+        return
     suffix = script.suffix.lower()
     if suffix == ".ps1":
         powershell = shutil.which("pwsh") or shutil.which("powershell")
@@ -226,6 +252,8 @@ def launch_dashboard(entries: list[dict[str, object]]) -> None:
 
 
 def self_test(root: Path, entries: list[dict[str, object]]) -> None:
+    from unittest.mock import patch
+
     for platform in ("linux", "macos", "windows"):
         assert compatible(entries, platform)
         assert resolve(entries, platform, "security-audit")["platform"] == "any"
@@ -235,6 +263,24 @@ def self_test(root: Path, entries: list[dict[str, object]]) -> None:
         )
     assert all(entry["id"] != "dev/gui.py" for entry in compatible(entries, host_os()))
     assert resolve(entries, host_os(), "run.sh", runnable=False)["id"] == "run.sh"
+    external = next((entry for entry in entries if entry["external"]), None)
+    if external:
+        assert not Path(str(external["path"])).is_absolute()
+        with (
+            patch.object(shutil, "which", return_value="/installed/tool"),
+            patch.object(os, "execvp") as execute,
+        ):
+            launch(external, ["--plain"])
+        execute.assert_called_once_with(
+            "/installed/tool", ["/installed/tool", "--plain"]
+        )
+        with patch.object(shutil, "which", return_value=None):
+            try:
+                launch(external, [])
+            except LauncherError as error:
+                assert "is not installed" in str(error)
+            else:
+                raise AssertionError("missing external executable was launched")
     matrix = support_matrix(entries)
     assert all(f"| `{entry['id']}` |" in matrix for entry in entries)
     assert "User; elevation for some actions" in matrix

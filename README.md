@@ -45,6 +45,8 @@ From a local checkout, use the shorter equivalents:
 ./run.sh matrix
 ./run.sh man disk
 ./run.sh clean
+./run.sh fetch --plain
+./run.sh games list --json
 ```
 
 Cleanup scripts always preview first and require explicit confirmation before
@@ -69,10 +71,15 @@ bin/  # Ready-to-run command-line tools
 dev/  # Helpers for development, repositories, and local workflows
 lib/  # Shared code used by more than one script
 sys/  # OS maintenance, cleanup, and fixes
+packs/ # Typed manuals for optional external executables; no wrapper logic
 ```
 
 Scripts are grouped by purpose rather than programming language. Platform-
-specific scripts can be placed below `sys/` when needed.
+specific scripts can be placed below `sys/` when needed. A `packs/NAME.man`
+manual may declare `"executable": "NAME"` to expose one installed external
+tool through the same launcher and dashboard without duplicating it in Bash or
+Python. Missing executables fail with an install hint; packs never download
+software implicitly.
 
 ## Contributing
 

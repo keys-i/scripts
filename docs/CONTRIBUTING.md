@@ -62,6 +62,9 @@ Only clean, understandable, and tested scripts are accepted.
 
 - Put commands for users in `bin/`, development helpers in `dev/`, reusable
   code in `lib/`, and system maintenance in `sys/`.
+- Put an optional installed tool in `packs/NAME.man` with an `executable`
+  command name. Do not add a Bash or Python wrapper that only forwards
+  arguments; the shared launchers resolve the executable directly.
 - Include an appropriate shebang and make executable scripts executable.
 - Validate input and fail with a useful message.
 - Add comments where they explain intent, risk, or an unusual decision. Do not

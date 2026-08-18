@@ -9,9 +9,10 @@
 
 # OS-aware script launcher
 
-`run.sh` reads the adjacent `.man` contracts under `bin`, `dev`, and `sys`; it
-does not maintain a second script list. Run it from a checkout or stream it
-without installing this repository.
+`run.sh` reads the adjacent `.man` contracts under `bin`, `dev`, `sys`, and
+`packs`; it does not maintain a second script list. A pack may name one
+installed `executable` instead of adding a wrapper. Run the launcher from a
+checkout or stream it without installing this repository.
 
 > **Behavior:** The launcher detects Linux, macOS, or Windows internally,
 > hides incompatible and non-launchable commands, passes arguments unchanged,
@@ -31,6 +32,8 @@ can supply Python. `curl` and `tar` are also needed for streamed runs.
 ./run.sh security-audit audit --scope system
 ./run.sh disk health
 ./run.sh clean
+./run.sh fetch --plain
+./run.sh games list --json
 ./run.sh --self-test
 ```
 
@@ -38,9 +41,10 @@ With no arguments, the responsive dashboard opens when `uv` and a terminal are
 available; otherwise the compatible script list is printed.
 
 Use a listed short name or its repository-relative path. Remaining arguments
-are passed unchanged to that command. Ambiguous names, traversal, malformed
-manual metadata, symlinks, unsupported platforms, and incompatible scripts are
-rejected.
+are passed unchanged to that command. External packs resolve one command name
+from `PATH` and never invoke a shell or installer. Ambiguous names, traversal,
+malformed manual metadata, symlinks, unsupported platforms, and incompatible
+scripts are rejected.
 
 `./run.sh matrix` publishes the support and privilege contract directly from
 the same manual metadata. “Supported” means the command implements that OS;

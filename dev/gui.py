@@ -69,9 +69,10 @@ FILE_PREVIEW_LIMIT = 256 * 1024
 OUTPUT_LINE_LIMIT = 8 * 1024
 HISTORY_LIMIT = 200
 MAN_SUFFIX = ".man"
-SEARCH_DIRS = ("bin", "dev", "sys")
+SEARCH_DIRS = ("bin", "dev", "sys", "packs")
 FLAG_PATTERN = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+COMMAND_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 PLATFORMS = {"any", "linux", "macos", "windows"}
 PLATFORM_LABELS = {
     "any": "Any",
@@ -89,6 +90,7 @@ METADATA_KEYS = {
     "directWhen",
     "findingExitCodes",
     "launchable",
+    "executable",
     "parameters",
     "options",
 }
@@ -166,6 +168,8 @@ class ScriptSpec:
     apply_when: tuple[str, ...] = ()
     direct_when: tuple[str, ...] = ()
     launchable: bool = True
+    external: bool = False
+    installed: bool = True
 
     @property
     def supported(self) -> bool:
@@ -480,9 +484,6 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
             )
     if apply_when and apply_flag is None:
         raise GuiError(f"{help_path}: applyWhen requires applyFlag")
-    if direct_when and apply_flag is None:
-        raise GuiError(f"{help_path}: directWhen requires applyFlag")
-
     launchable = metadata.get("launchable", True)
     if not isinstance(launchable, bool):
         raise GuiError(f"{help_path}: launchable must be true or false")
@@ -498,11 +499,17 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
             f"{help_path}: findingExitCodes must contain unique integers from 1 to 255"
         )
 
-    script_path = Path(str(help_path)[: -len(MAN_SUFFIX)]).resolve()
-    if not script_path.is_file():
+    executable = metadata.get("executable")
+    if executable is not None and (
+        not isinstance(executable, str) or not COMMAND_PATTERN.fullmatch(executable)
+    ):
+        raise GuiError(f"{help_path}: executable must be one command name")
+    adjacent_path = Path(str(help_path)[: -len(MAN_SUFFIX)]).resolve()
+    script_path = adjacent_path if executable is None else Path(executable)
+    if executable is None and not script_path.is_file():
         raise GuiError(f"{help_path}: adjacent script does not exist")
     try:
-        script_id = script_path.relative_to(root).as_posix()
+        script_id = adjacent_path.relative_to(root).as_posix()
     except ValueError as error:
         raise GuiError(f"{help_path}: script escapes the repository") from error
 
@@ -534,6 +541,8 @@ def parse_help(help_path: Path, root: Path) -> ScriptSpec:
         apply_when=apply_when,
         direct_when=direct_when,
         launchable=launchable,
+        external=executable is not None,
+        installed=executable is None or shutil.which(executable) is not None,
     )
 
 
@@ -657,6 +666,8 @@ def _resolve_program(program: str) -> str:
 
 
 def command_for(script: ScriptSpec, flags: Iterable[str]) -> list[str]:
+    if script.external:
+        return [_resolve_program(str(script.path)), *flags]
     if script.path.suffix.lower() == ".ps1":
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
@@ -699,7 +710,8 @@ def command_for(script: ScriptSpec, flags: Iterable[str]) -> list[str]:
 
 
 def display_command(command: Iterable[str]) -> str:
-    return shlex.join(command)
+    values = list(command)
+    return subprocess.list2cmdline(values) if os.name == "nt" else shlex.join(values)
 
 
 def markdown_code_block(text: str) -> str:
@@ -1142,7 +1154,13 @@ class RunWizard(ModalScreen[RunSelection | None]):
         self.query_one("#wizard-back", Button).disabled = self.step == 0
         arguments = self.selected_arguments() if self.step == 2 else ()
         self.query_one("#wizard-next", Button).label = (
-            ("Preview" if self.script.needs_apply(arguments or ()) else "Run")
+            (
+                "Preview"
+                if self.script.needs_apply(arguments or ())
+                else "Show command"
+                if self.script.needs_direct_terminal(arguments or ())
+                else "Run"
+            )
             if self.step == 2
             else "Next"
         )
@@ -1185,6 +1203,9 @@ class RunWizard(ModalScreen[RunSelection | None]):
                 "This runs a read-only preview first, then shows the apply "
                 "command for a direct interactive terminal."
                 if needs_apply and self.script.needs_direct_terminal(arguments)
+                else "This interactive tool needs the terminal. Confirm to show the "
+                "exact command to run."
+                if self.script.needs_direct_terminal(arguments)
                 else "This runs a read-only preview first. Apply repeats "
                 "discovery with the same settings, so targets may change "
                 "between runs. A successful preview must be followed by `CLEAN`."
@@ -1745,7 +1766,7 @@ class ScriptsApp(App[None]):
         ]
         visible.sort(
             key=lambda script: (
-                not (script.supported and script.launchable),
+                not (script.supported and script.launchable and script.installed),
                 not script.supported,
                 script.script_id,
             )
@@ -1753,12 +1774,14 @@ class ScriptsApp(App[None]):
         table = self.query_one("#scripts", DataTable)
         table.clear()
         for script in visible:
-            ready = script.supported and script.launchable
+            ready = script.supported and script.launchable and script.installed
             state = Text(
                 "● Ready"
                 if ready
                 else "◆ Guide"
                 if not script.launchable
+                else "○ Install"
+                if script.supported and not script.installed
                 else f"○ {PLATFORM_LABELS[script.platform]}",
                 style=(
                     "green"
@@ -1802,6 +1825,8 @@ class ScriptsApp(App[None]):
         badge = (
             "Documentation only"
             if not script.launchable
+            else f"Install `{script.path}` to run"
+            if script.supported and not script.installed
             else "Available on this computer"
             if script.supported
             else f"Available on {PLATFORM_LABELS[script.platform]}"
@@ -1818,6 +1843,7 @@ class ScriptsApp(App[None]):
             self.selected is not None
             and self.selected.supported
             and self.selected.launchable
+            and self.selected.installed
             and self.started_at is None
         )
         self.query_one("#run", Button).disabled = not available
@@ -1825,7 +1851,8 @@ class ScriptsApp(App[None]):
             self.process is None or not cancel_allowed(self.active_phase)
         )
         supported = sum(
-            script.supported and script.launchable for script in self.scripts
+            script.supported and script.launchable and script.installed
+            for script in self.scripts
         )
         state = "running" if self.started_at is not None else "ready"
         platform = PLATFORM_LABELS.get(host_platform(), host_platform())
@@ -1941,6 +1968,7 @@ class ScriptsApp(App[None]):
             self.selected is None
             or not self.selected.supported
             or not self.selected.launchable
+            or not self.selected.installed
             or self.started_at is not None
         ):
             return
@@ -2135,6 +2163,21 @@ class ScriptsApp(App[None]):
     async def run_selection(self, selection: RunSelection) -> None:
         try:
             needs_apply = selection.script.needs_apply(selection.flags)
+            if (
+                selection.script.needs_direct_terminal(selection.flags)
+                and not needs_apply
+            ):
+                command = display_command(
+                    command_for(selection.script, selection.flags)
+                )
+                self.query_one("#details-tabs", TabbedContent).active = "output-pane"
+                self.query_one("#activity-heading", Label).update(
+                    "Direct interactive terminal required"
+                )
+                log = self.query_one("#run-log", RichLog)
+                log.clear()
+                log.write(f"Run directly:\n$ {command}")
+                return
             result = await self.run_once(
                 selection,
                 "Preview" if needs_apply else "Run",
@@ -2237,7 +2280,7 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     if legacy:
         names = ", ".join(path.as_posix() for path in legacy)
         raise GuiError(f"legacy .help manuals remain: {names}")
-    documented = {script.path for script in scripts}
+    documented = {script.path for script in scripts if not script.external}
     commands = {path.resolve() for path in root.iterdir() if _is_command(path)}
     commands |= {
         path.resolve()
@@ -2264,6 +2307,17 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
     )
     if dashboard is None or dashboard.launchable:
         raise GuiError("dashboard manual must be present and non-launchable")
+    external = next((script for script in scripts if script.external), None)
+    if external is not None:
+        with patch("shutil.which", return_value="/installed/tool"):
+            assert command_for(external, ("--plain",)) == [
+                "/installed/tool",
+                "--plain",
+            ]
+    with patch.object(os, "name", "nt"):
+        assert display_command((r"C:\Program Files\fetch.exe", "--plain")) == (
+            '"C:\\Program Files\\fetch.exe" --plain'
+        )
 
     with tempfile.TemporaryDirectory(prefix="scripts-gui-contract-") as directory:
         contract_root = Path(directory).resolve()
@@ -2330,6 +2384,18 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
             probe.parameters[1].when,
             {"action": "show"},
         )
+        metadata["executable"] = "../escape"
+        help_path.write_text(
+            f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
+            encoding="utf-8",
+        )
+        try:
+            parse_help(help_path, contract_root)
+        except GuiError as error:
+            assert "executable must be one command name" in str(error)
+        else:
+            raise AssertionError("unsafe external executable was accepted")
+        metadata.pop("executable")
         metadata["privlege"] = metadata.pop("privilege")
         help_path.write_text(
             f"---\n{json.dumps(metadata)}\n---\n{probe_markdown}",
@@ -2388,6 +2454,12 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert table.get_row(other_os.script_id)[0].plain == (
             f"○ {PLATFORM_LABELS[other_os.platform]}"
         )
+        missing_external = next(
+            (script for script in scripts if script.external and not script.installed),
+            None,
+        )
+        if missing_external is not None:
+            assert table.get_row(missing_external.script_id)[0].plain == "○ Install"
         compact.show_script(runnable)
         await pilot.pause()
         assert help_scroll.max_scroll_y > 0

@@ -1,0 +1,34 @@
+---
+{
+  "summary": "Show a fast native system and CPU overview.",
+  "platform": "any",
+  "privilege": "user",
+  "executable": "fetch",
+  "parameters": [
+    {
+      "name": "format",
+      "label": "Output format",
+      "required": true,
+      "default": "--plain",
+      "choices": [
+        {"value": "--plain", "label": "Plain text"},
+        {"value": "--json", "label": "JSON"}
+      ]
+    }
+  ]
+}
+---
+# Fetch
+
+`fetch` is the native system-and-CPU command from
+[`keys-i/tools`](https://github.com/keys-i/tools). It reports host, operating
+system, kernel, architecture, CPU, topology, caches, core counts, memory,
+shell, and terminal without starting Python or a shell subprocess.
+
+The dashboard exposes the stable `format` choices `--plain` and `--json`.
+Running `fetch` directly in a terminal uses the styled view. `NO_COLOR=1`
+disables decoration.
+
+Build [`keys-i/tools`](https://github.com/keys-i/tools) and place `fetch` on
+`PATH`. The prepared `keys-tools` PyPI package has not been published. This
+script pack does not download or install binaries.
