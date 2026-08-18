@@ -1,0 +1,134 @@
+---
+{
+  "summary": "Run native rain, pipes, pond, weather, Git, and local GIF terminal scenes.",
+  "platform": "any",
+  "privilege": "user",
+  "executable": "screensaver",
+  "directWhen": ["open"],
+  "parameters": [
+    {
+      "name": "action",
+      "label": "Action",
+      "required": true,
+      "default": "snapshot",
+      "choices": [
+        {"value": "snapshot", "label": "Print a snapshot"},
+        {"value": "open", "label": "Open animation"}
+      ]
+    },
+    {
+      "name": "scene",
+      "label": "Scene",
+      "required": true,
+      "default": "mix",
+      "choices": [
+        {"value": "mix", "label": "Cycle generated scenes"},
+        {"value": "rain", "label": "Digital rain"},
+        {"value": "pipes", "label": "Wrapping pipes"},
+        {"value": "pond", "label": "Frog pond"},
+        {"value": "weather", "label": "Offline weather"},
+        {"value": "git", "label": "Local Git history"},
+        {"value": "gif", "label": "Local GIF"}
+      ]
+    },
+    {
+      "name": "gif",
+      "label": "GIF file",
+      "required": true,
+      "placeholder": "animation.gif",
+      "when": {"scene": ["gif"]}
+    },
+    {
+      "name": "repository",
+      "label": "Git repository",
+      "placeholder": ". (current repository)",
+      "when": {"scene": ["git"]}
+    },
+    {
+      "name": "seed",
+      "label": "Reproducible seed",
+      "flag": "--seed",
+      "placeholder": "unsigned integer",
+      "when": {"scene": ["mix", "rain", "pipes", "pond", "weather"]}
+    },
+    {
+      "name": "condition",
+      "label": "Weather condition",
+      "flag": "--condition",
+      "required": true,
+      "default": "clear",
+      "choices": [
+        {"value": "clear", "label": "Clear"},
+        {"value": "rain", "label": "Rain"},
+        {"value": "snow", "label": "Snow"},
+        {"value": "storm", "label": "Storm"},
+        {"value": "fog", "label": "Fog"}
+      ],
+      "when": {"scene": ["mix", "weather"]}
+    },
+    {
+      "name": "frame",
+      "label": "Animation frame",
+      "flag": "--frame",
+      "placeholder": "0 to 10000, default 24",
+      "when": {"action": ["snapshot"]}
+    },
+    {
+      "name": "fps",
+      "label": "Frames per second",
+      "flag": "--fps",
+      "placeholder": "1 to 60, default 20",
+      "when": {"action": ["open"]}
+    },
+    {
+      "name": "format",
+      "label": "Snapshot format",
+      "required": true,
+      "default": "--plain",
+      "choices": [
+        {"value": "--plain", "label": "Plain text"},
+        {"value": "--json", "label": "JSON"}
+      ],
+      "when": {"action": ["snapshot"]}
+    }
+  ],
+  "options": [
+    {
+      "flag": "--night",
+      "label": "Render weather at night",
+      "when": {"scene": ["mix", "weather"]}
+    }
+  ]
+}
+---
+# Screensaver
+
+`screensaver` is the native clean-room terminal animation tool from
+[`keys-i/tools`](https://github.com/keys-i/tools). It owns digital rain,
+wrapping pipes, a frog pond, offline weather, a bounded local Git-history view,
+and local GIF87a/89a decoding. It does not launch the six research programs or
+copy their code, assets, themes, or branding.
+
+Choose `snapshot` for deterministic plain or JSON output inside Scripts.
+Choose `open` to show the exact command for a full terminal. Generated scenes
+accept an optional `--seed`; snapshots accept `--frame`; interactive animation
+can be reduced to one update per second with `--fps 1`. `NO_COLOR=1` disables
+color. Keyboard controls are Space to pause, `r` to reset, arrows to navigate
+or change speed, `n` to advance a mixed scene, and `q` or Escape to quit.
+
+The `action` selects `snapshot` or `open`; `scene` selects the renderer. Supply
+a `gif` file for GIF mode or an optional `repository` for Git mode, choose a
+`seed` for generated scenes, and set the weather `condition` through
+`--condition`. Snapshots accept
+a `frame` and `format`; animation accepts `fps`. Use `--night` for the night
+weather palette.
+
+Git mode invokes only the installed `git` command once, reading at most 64
+commit summaries through a 30-second, 8 MiB bounded capture. GIF input is local
+and capped at 64 MiB, 512 frames, 16 million retained render pixels, and 128
+million decoded source pixels. No network, geolocation, weather API, Tenor
+query, video codec, media export, cache, Python, or shell process is involved.
+
+This Scripts pack contains only the typed UI contract; all scene, parser, and
+terminal behavior stays in the Rust binary. The prepared `keys-tools` PyPI
+package has not been published.
