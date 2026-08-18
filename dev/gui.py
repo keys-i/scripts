@@ -2498,14 +2498,14 @@ async def self_test(root: Path, scripts: tuple[ScriptSpec, ...]) -> None:
         assert compact.query_one("#details-tabs", TabbedContent).active == "help-pane"
         assert compact.focused is help_scroll
         await pilot.press("end")
-        await pilot.pause()
+        await pilot.wait_for_scheduled_animations()
         assert help_scroll.scroll_y > 0
         help_scroll.scroll_home(animate=False)
         await pilot.pause()
         help_scroll.post_message(
             MouseScrollDown(help_scroll, 1, 1, 0, 1, 0, False, False, False)
         )
-        await pilot.pause()
+        await pilot.wait_for_scheduled_animations()
         assert help_scroll.scroll_y > 0
         await pilot.press("f3")
         assert compact.query_one("#details-tabs", TabbedContent).active == "files-pane"
